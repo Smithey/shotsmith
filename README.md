@@ -12,7 +12,7 @@ The free, open-source screenshot and annotation tool for **Mac and Windows**.
 ![Built with](https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-black)
 [![Free forever](https://img.shields.io/badge/free-forever-FF9F0A)](#free-forever)
 
-[Download](https://github.com/OWNER/shotsmith/releases) · [Website](https://shotsmith.app) · [Docs](docs/) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md)
+[Download](https://github.com/Smithey/shotsmith/releases) · [Website](https://shotsmith.app) · [Docs](docs/) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md)
 
 <img src="docs/assets/hero.png" width="860" alt="Shotsmith editor with an annotated screenshot and the donut quick-action menu">
 
@@ -57,7 +57,7 @@ brew install --cask shotsmith
 winget install Shotsmith.Shotsmith
 ```
 
-Or download the latest signed build from [Releases](https://github.com/OWNER/shotsmith/releases).
+Or download the latest signed build from [Releases](https://github.com/Smithey/shotsmith/releases).
 
 On first launch on a Mac, allow **Screen Recording** when asked (System Settings › Privacy & Security).
 
@@ -103,7 +103,7 @@ Pro has a 14-day free trial with no card. Prices in USD; tax added where require
 Requirements: [Rust](https://rustup.rs) (stable), Node.js 20+ with pnpm, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```sh
-git clone https://github.com/OWNER/shotsmith.git
+git clone https://github.com/Smithey/shotsmith.git
 cd shotsmith
 pnpm install
 pnpm tauri dev        # run in development
