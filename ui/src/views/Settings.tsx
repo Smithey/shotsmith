@@ -195,7 +195,7 @@ export function Settings() {
           <>
             <h1>Shotsmith 0.1.0</h1>
             <p>Free screenshot and annotation tool. MIT licence. This build does not phone home.</p>
-            <p>OCR, share, scrolling capture, and Pro are later releases. See docs/ROADMAP.md.</p>
+            <p>OCR, share, and scrolling capture come in later versions.</p>
           </>
         )}
       </section>
