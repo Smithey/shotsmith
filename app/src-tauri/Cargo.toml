@@ -1,0 +1,36 @@
+[package]
+name = "shotsmith"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shotsmith screenshot and annotation tool"
+
+[lib]
+name = "shotsmith_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+shotsmith-core = { workspace = true }
+shotsmith-render = { workspace = true }
+shotsmith-capture = { workspace = true }
+shotsmith-platform = { workspace = true }
+shotsmith-history = { workspace = true }
+shotsmith-output = { workspace = true }
+shotsmith-extensions = { workspace = true }
+image = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+arboard = "3"
+dirs = "5"
+thiserror = { workspace = true }

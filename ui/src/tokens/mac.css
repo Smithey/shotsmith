@@ -1,0 +1,4 @@
+html[data-platform="macos"] {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --mono: "SF Mono", ui-monospace, monospace;
+}

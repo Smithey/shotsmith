@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light dark;
+  --accent: #0a84ff;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: rgba(0, 0, 0, 0.08);
+  --panel: rgba(255, 255, 255, 0.86);
+  --canvas: #e3e3e8;
+  --danger: #ff3b30;
+  --swatch: #ff3b30;
+  --radius-window: 12px;
+  --radius-control: 8px;
+  --inspector: 272px;
+  --font: system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f5f5f7;
+    --muted: #a1a1a6;
+    --line: rgba(255, 255, 255, 0.1);
+    --panel: rgba(32, 32, 34, 0.88);
+    --canvas: #1e1e1e;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+body {
+  font-family: var(--font);
+  color: var(--ink);
+  background: transparent;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.mono { font-family: var(--mono); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

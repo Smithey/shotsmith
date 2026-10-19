@@ -1,0 +1,13 @@
+[package]
+name = "shotsmith-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+shotsmith-core = { workspace = true }
+image = { workspace = true }
+tiny-skia = { workspace = true }
+ab_glyph = "0.2"
+base64 = "0.22"

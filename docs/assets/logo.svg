@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="Shotsmith">
+  <rect width="96" height="96" rx="22" fill="#2a2a2c"/>
+  <g fill="none" stroke="#FF9F0A" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="4 3">
+    <path d="M34 18h10a4 4 0 0 1 4 4v8"/>
+    <path d="M62 30V22a4 4 0 0 0-4-4H50"/>
+    <path d="M34 18h-2"/>
+  </g>
+  <path fill="#fff" d="M30 46h36c0 6-4 10-10 11v6h8v8H32v-8h8v-6c-6-1-10-5-10-11z"/>
+  <path fill="#FF9F0A" d="M68 16l2.2 4.6 5 .6-3.7 3.4.9 5-4.4-2.4-4.4 2.4.9-5-3.7-3.4 5-.6z"/>
+</svg>

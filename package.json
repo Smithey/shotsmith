@@ -1,0 +1,14 @@
+{
+  "name": "shotsmith",
+  "private": true,
+  "version": "0.1.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "scripts": {
+    "tauri": "pnpm --dir app exec tauri",
+    "dev": "pnpm --dir ui dev",
+    "build": "pnpm --dir ui build",
+    "typecheck": "pnpm --dir ui exec tsc --noEmit"
+  }
+}
