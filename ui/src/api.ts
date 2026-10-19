@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Document } from "./bindings/Document";
@@ -101,8 +101,16 @@ export type EditorState = {
 
 export const SWATCHES = ["#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#007AFF", "#AF52DE", "#1D1D1F"];
 
+function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return Promise.reject(new Error("Shotsmith commands are only available in the desktop app."));
+  }
+  return tauriInvoke<T>(command, args);
+}
+
 export function assetUrl(path: string): string {
   if (!path) return "";
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return "";
   return convertFileSrc(path);
 }
 
