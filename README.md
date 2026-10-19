@@ -113,6 +113,20 @@ cargo test --workspace
 
 Self-built copies are the full free app, without Pro.
 
+### Test on your Mac
+
+Run this on macOS 14 or newer, with Xcode Command Line Tools installed (`xcode-select --install`).
+
+```sh
+pnpm install
+pnpm tauri build
+open target/release/bundle/macos/Shotsmith.app
+```
+
+The `.app` is ad-hoc signed, so it opens on the Mac that built it. A disk image is written beside it at `target/release/bundle/dmg/`. Shotsmith runs from the menu bar. On the first capture, allow Screen Recording in System Settings, Privacy & Security.
+
+A paid Apple Developer Program membership covers Mac apps. Use it to create a **Developer ID Application** certificate in that same team when you want other Macs to open the app. An iOS distribution certificate is a separate certificate and is not used by this build.
+
 ## Project layout
 
 ```
