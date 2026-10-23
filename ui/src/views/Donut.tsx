@@ -1,10 +1,18 @@
-import { useEffect, useState } from "react";
-import { api, assetUrl, currentWindow, onRefresh, type DonutState } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, currentWindow, onRefresh, type DonutState } from "../api";
+
+const SIZE = 300;
+const CENTER = 150;
+const OUTER = 150;
+const INNER = 58;
 
 export function Donut() {
   const [state, setState] = useState<DonutState | null>(null);
   const [hover, setHover] = useState(0);
   const [error, setError] = useState("");
+  const stateRef = useRef<DonutState | null>(null);
+  const busy = useRef(false);
+  stateRef.current = state;
 
   useEffect(() => {
     const load = () => api.donut().then(setState).catch((err: Error) => setError(err.message));
@@ -12,35 +20,42 @@ export function Donut() {
     let stop = () => {};
     onRefresh(load).then((un) => { stop = un; });
     const onKey = (event: KeyboardEvent) => {
+      const current = stateRef.current;
       if (event.key === "Escape") currentWindow().hide();
-      if (event.key === "Enter") act(state?.slots[0]?.id ?? "copy", event.shiftKey);
+      if (!current) return;
+      if (event.key === "Enter") act(current.slots[0]?.id ?? "copy", event.shiftKey);
       const index = Number(event.key) - 1;
-      if (index >= 0 && state && index < state.slots.length) act(state.slots[index].id, event.shiftKey);
+      if (index >= 0 && index < current.slots.length) act(current.slots[index].id, event.shiftKey);
     };
     window.addEventListener("keydown", onKey);
     return () => { stop(); window.removeEventListener("keydown", onKey); };
-  }, [state?.captureId]);
+  }, []);
 
   function act(action: string, keepOpen: boolean) {
-    api.donutAct(action, keepOpen).catch((err: Error) => setError(err.message));
+    if (!action || busy.current) return;
+    busy.current = true;
+    api.donutAct(action, keepOpen).catch((err: Error) => {
+      setError(err.message);
+      busy.current = false;
+    });
+    if (keepOpen) busy.current = false;
   }
 
-  if (!state) return <p className="error">{error || "Opening the donut…"}</p>;
+  if (!state) return <p className="error donut-status">{error || "Opening the donut…"}</p>;
   const count = state.slots.length;
-  const cx = 190;
-  const cy = 190;
   return (
     <div
       className="donut"
       onMouseMove={(event) => {
         const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
-        const dx = event.clientX - bounds.left - cx;
-        const dy = event.clientY - bounds.top - cy;
+        const dx = event.clientX - bounds.left - CENTER;
+        const dy = event.clientY - bounds.top - CENTER;
         if (Math.hypot(dx, dy) < 50) return;
         let angle = Math.atan2(dy, dx) + Math.PI / 2;
         if (angle < 0) angle += Math.PI * 2;
         setHover(Math.floor((angle / (Math.PI * 2)) * count) % count);
       }}
+      onMouseDown={(event) => { (event.currentTarget as HTMLElement).dataset.down = `${event.clientX},${event.clientY},${performance.now()}`; }}
       onMouseUp={(event) => {
         const start = (event.currentTarget as HTMLElement).dataset.down;
         if (!start) return;
@@ -49,30 +64,29 @@ export function Donut() {
         const dy = event.clientY - y;
         if (Math.hypot(dx, dy) > 40 && performance.now() - t < 300) act(state.slots[hover].id, event.shiftKey);
       }}
-      onMouseDown={(event) => { (event.currentTarget as HTMLElement).dataset.down = `${event.clientX},${event.clientY},${performance.now()}`; }}
     >
-      <svg viewBox="0 0 380 380" onClick={(event) => act(state.slots[hover].id, event.shiftKey)}>
+      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE}>
         {state.slots.map((slot, index) => {
           const gap = 1.6 * Math.PI / 180;
           const slice = (Math.PI * 2) / count;
           const a0 = -Math.PI / 2 + index * slice + gap / 2;
           const a1 = -Math.PI / 2 + (index + 1) * slice - gap / 2;
-          const path = ring(cx, cy, 70, 176, a0, a1);
-          const labelAt = polar(cx, cy, 122, (a0 + a1) / 2);
+          const path = ring(CENTER, CENTER, INNER, OUTER - 2, a0, a1);
+          const labelAt = polar(CENTER, CENTER, 102, (a0 + a1) / 2);
           return (
-            <g key={slot.id}>
-              <path d={path} fill={index === hover ? "#0A84FF" : "rgba(28,28,30,.92)"} stroke="rgba(255,255,255,.12)" />
+            <g key={slot.id} onClick={(event) => { event.stopPropagation(); act(slot.id, event.shiftKey); }}>
+              <path d={path} fill={index === hover ? "var(--accent)" : "rgba(28,28,30,0.92)"} stroke="rgba(255,255,255,0.10)" />
               <text x={labelAt.x} y={labelAt.y} fill="white" fontSize="13" textAnchor="middle">{slot.label}</text>
-              <text x={labelAt.x} y={labelAt.y + 14} fill="rgba(255,255,255,.7)" fontSize="10" textAnchor="middle">{slot.key}{index === 0 ? " · ↩" : ""}</text>
+              <text x={labelAt.x} y={labelAt.y + 14} fill="rgba(255,255,255,0.72)" fontSize="11" textAnchor="middle">{slot.key}{index === 0 ? "  ↩" : ""}</text>
             </g>
           );
         })}
       </svg>
       <div className="donut-center">
-        <img src={assetUrl(state.imagePath)} alt="" />
+        {state.preview && <img src={state.preview} alt="" />}
         <span>{state.width}×{state.height}</span>
       </div>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error donut-status">{error}</p>}
     </div>
   );
 }

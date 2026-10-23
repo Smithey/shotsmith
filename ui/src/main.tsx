@@ -9,6 +9,7 @@ import { Onboarding } from "./views/Onboarding";
 import { Overlay } from "./views/Overlay";
 import { Pin } from "./views/Pin";
 import { Settings } from "./views/Settings";
+import { StatusMenu } from "./views/StatusMenu";
 import "./tokens/shared.css";
 import "./tokens/mac.css";
 import "./tokens/windows.css";
@@ -18,9 +19,11 @@ function inDesktop() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+document.documentElement.dataset.view = viewName();
+
 function Shell() {
-  const [ready, setReady] = useState(false);
   const desktop = inDesktop();
+  const [ready, setReady] = useState(desktop);
   useEffect(() => {
     if (!desktop) return;
     api.platform().then((platform) => {
@@ -38,6 +41,7 @@ function Shell() {
     case "hud": return <Hud />;
     case "pin": return <Pin />;
     case "onboarding": return <Onboarding />;
+    case "menu": return <StatusMenu />;
     default: return <Settings />;
   }
 }

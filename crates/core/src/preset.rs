@@ -90,7 +90,7 @@ pub fn builtin_presets(default_folder: &str) -> Vec<Preset> {
     vec![
         Preset {
             id: "builtin-docs-png".into(),
-            name: "Docs PNG".into(),
+            name: "Save PNG".into(),
             format: ImageFormat::Png,
             quality: 1.0,
             scale: OutputScale::Points,

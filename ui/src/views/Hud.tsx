@@ -4,11 +4,13 @@ import { api, assetUrl, currentWindow, onRefresh, type HudState } from "../api";
 export function Hud() {
   const [state, setState] = useState<HudState | null>(null);
   const [left, setLeft] = useState<number | null>(null);
+  const [shown, setShown] = useState(0);
 
   useEffect(() => {
     const load = () => api.hud().then((next) => {
       setState(next);
       setLeft(next.countdown);
+      setShown((value) => value + 1);
     }).catch(() => undefined);
     load();
     let stop = () => {};
@@ -17,10 +19,13 @@ export function Hud() {
   }, []);
 
   useEffect(() => {
-    if (left == null) {
-      const timer = window.setTimeout(() => currentWindow().hide(), 2500);
-      return () => window.clearTimeout(timer);
-    }
+    if (!state || left != null) return;
+    const timer = window.setTimeout(() => currentWindow().hide(), 2500);
+    return () => window.clearTimeout(timer);
+  }, [state, left, shown]);
+
+  useEffect(() => {
+    if (left == null) return;
     if (left <= 0) {
       api.countdownDone();
       return;
@@ -31,7 +36,10 @@ export function Hud() {
 
   if (!state) return null;
   return (
-    <div className="hud">
+    <div className="hud" onClick={(event) => {
+      if ((event.target as HTMLElement).closest("button")) return;
+      currentWindow().hide();
+    }}>
       {state.imagePath && <img src={assetUrl(state.imagePath)} alt="" />}
       <div>
         <strong>{left != null ? `Capturing in ${left}` : state.title}</strong>

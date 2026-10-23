@@ -3,13 +3,16 @@ mod state;
 mod windows;
 
 use state::{app_root, load_presets, load_settings, AppState};
+use std::str::FromStr;
 use std::sync::Mutex;
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::TrayIconBuilder,
+    tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,6 +23,17 @@ pub fn run() {
     let history = shotsmith_history::HistoryDb::open(&root.join("history.db")).expect("history database");
 
     tauri::Builder::default()
+        .enable_macos_default_menu(false)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            for label in ["onboarding", "settings", "editor", "history"] {
+                if let Some(window) = app.get_webview_window(label) {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                    return;
+                }
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -46,6 +60,7 @@ pub fn run() {
             editor: Mutex::new(None),
             donut: Mutex::new(None),
             hud: Mutex::new(None),
+            capture_mode: Mutex::new("region".into()),
         })
         .setup(|app| {
             if let Some(dir) = app.path().app_data_dir().ok() {
@@ -55,10 +70,12 @@ pub fn run() {
             let _ = app.asset_protocol_scope().allow_directory(&state.root, true);
             let onboarding = state.settings.lock().map(|s| !s.onboarding_done).unwrap_or(false);
             drop(state);
+            let needs_permissions = !shotsmith_platform::screen_recording_granted()
+                || !shotsmith_platform::accessibility_granted();
             let _ = rebuild_tray(app.handle());
             let _ = register_shortcuts(app.handle());
-            if onboarding {
-                let _ = windows::open_view(app.handle(), "onboarding", "onboarding", "Welcome to Shotsmith", 180.0, 120.0, 560.0, 460.0, true, false);
+            if onboarding || needs_permissions {
+                let _ = windows::open_view(app.handle(), "onboarding", "onboarding", "Welcome to Shotsmith", 180.0, 80.0, 520.0, 680.0, true, false);
             }
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -67,6 +84,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
             commands::settings_set,
+            commands::shortcuts_suspend,
+            commands::shortcuts_reload,
             commands::presets_list,
             commands::presets_save,
             commands::presets_delete,
@@ -85,6 +104,7 @@ pub fn run() {
             commands::capture_countdown_done,
             commands::history_list,
             commands::history_delete,
+            commands::history_copy,
             commands::editor_open,
             commands::editor_state,
             commands::editor_commit,
@@ -109,6 +129,12 @@ pub fn run() {
             commands::pick_save,
             commands::copy_hex,
             commands::quit,
+            commands::capture_mode,
+            commands::open_screen_settings,
+            commands::open_accessibility_settings,
+            commands::open_keyboard_settings,
+            commands::relaunch,
+            commands::feature_notice,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Shotsmith")
@@ -124,8 +150,10 @@ pub fn run() {
 pub fn register_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().map_err(|err| err.to_string())?.clone();
+    drop(state);
     let shortcut = app.global_shortcut();
-    let _ = shortcut.unregister_all();
+    shortcut.unregister_all().map_err(|err| err.to_string())?;
+    let mut errors = Vec::new();
     for raw in [
         settings.shortcuts.region,
         settings.shortcuts.repeat_last,
@@ -133,27 +161,36 @@ pub fn register_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
         settings.shortcuts.full_screen,
         settings.shortcuts.history,
     ] {
-        if let Some(parsed) = parse_shortcut(&raw) {
-            let _ = shortcut.register(parsed);
+        let Some(parsed) = parse_shortcut(&raw) else {
+            if !raw.trim().is_empty() {
+                errors.push(format!("Could not read {raw}"));
+            }
+            continue;
+        };
+        if let Err(err) = shortcut.register(parsed) {
+            errors.push(err.to_string());
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join(". "))
+    }
 }
 
 fn handle_shortcut(app: &tauri::AppHandle, shortcut: &Shortcut) -> Result<(), String> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().map_err(|err| err.to_string())?.clone();
     drop(state);
-    let raw = shortcut_name(shortcut);
-    let mode = if raw == normalize(&settings.shortcuts.region) {
+    let mode = if same_shortcut(shortcut, &settings.shortcuts.region) {
         "region"
-    } else if raw == normalize(&settings.shortcuts.repeat_last) {
+    } else if same_shortcut(shortcut, &settings.shortcuts.repeat_last) {
         "repeat"
-    } else if raw == normalize(&settings.shortcuts.window) {
+    } else if same_shortcut(shortcut, &settings.shortcuts.window) {
         "window"
-    } else if raw == normalize(&settings.shortcuts.full_screen) {
+    } else if same_shortcut(shortcut, &settings.shortcuts.full_screen) {
         "screen"
-    } else if raw == normalize(&settings.shortcuts.history) {
+    } else if same_shortcut(shortcut, &settings.shortcuts.history) {
         "history"
     } else {
         return Ok(());
@@ -179,17 +216,39 @@ fn handle_shortcut(app: &tauri::AppHandle, shortcut: &Shortcut) -> Result<(), St
     Ok(())
 }
 
+pub fn set_tray_capturing(app: &tauri::AppHandle, active: bool) {
+    let Some(tray) = app.tray_by_id("shotsmith") else {
+        return;
+    };
+    let bytes: &[u8] = if active {
+        include_bytes!("../icons/trayActive.png")
+    } else {
+        include_bytes!("../icons/trayTemplate.png")
+    };
+    if let Ok(icon) = Image::from_bytes(bytes) {
+        let _ = tray.set_icon(Some(icon));
+        let _ = tray.set_icon_as_template(!active);
+    }
+}
+
 pub fn rebuild_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let menu = build_menu(app)?;
-    if let Some(tray) = app.tray_by_id("shotsmith") {
-        tray.set_menu(Some(menu))?;
+    let _ = app.set_menu(build_menu_bar(app)?);
+    if app.tray_by_id("shotsmith").is_some() {
         return Ok(());
     }
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
+    let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))?;
+    let handle = app.clone();
     TrayIconBuilder::with_id("shotsmith")
         .icon(icon)
-        .menu(&menu)
+        .icon_as_template(true)
         .tooltip("Shotsmith")
+        .on_tray_icon_event(move |_tray, event| {
+            if let TrayIconEvent::Click { button_state, rect, .. } = event {
+                if button_state == MouseButtonState::Down {
+                    windows::toggle_status_menu(&handle, rect);
+                }
+            }
+        })
         .on_menu_event(|app, event| {
             let _ = on_menu(app, event.id.as_ref());
         })
@@ -197,66 +256,118 @@ pub fn rebuild_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_menu_bar(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let settings_item = action(app, "settings", "Settings…", Some("Cmd+,"))?;
+    let capture = Submenu::with_id(app, "capture-menu", "Capture", true)?;
+    append_capture(&capture, app, false)?;
+    let app_menu = Submenu::with_items(
+        app,
+        "Shotsmith",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("About Shotsmith"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &settings_item,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, Some("Hide Shotsmith"))?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, Some("Quit Shotsmith"))?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &capture])
+}
+
+fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_commands: bool) -> tauri::Result<()> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().ok();
-    let region = settings.as_ref().map(|s| shortcut_label(&s.shortcuts.region)).unwrap_or_default();
-    let recent = state.history.lock().ok().and_then(|db| db.list(3).ok()).unwrap_or_default();
-    let pinned = state.history.lock().ok().and_then(|db| db.list(20).ok()).unwrap_or_default();
-
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
-    let capture = MenuItem::with_id(app, "capture-region", format!("Region  {region}"), true, None::<&str>)?;
-    let repeat = MenuItem::with_id(app, "capture-repeat", "Repeat last region", true, None::<&str>)?;
-    let window = MenuItem::with_id(app, "capture-window", "Window", true, None::<&str>)?;
-    let screen = MenuItem::with_id(app, "capture-screen", "Full screen", true, None::<&str>)?;
-    let timed = MenuItem::with_id(app, "capture-timed", "Timed, 5 s", true, None::<&str>)?;
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    let history = MenuItem::with_id(app, "history", "Show History", true, None::<&str>)?;
-    let open_image = MenuItem::with_id(app, "open-image", "Open image…", true, None::<&str>)?;
-    let clipboard = MenuItem::with_id(app, "clipboard", "Edit image from clipboard", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Shotsmith", true, None::<&str>)?;
-
-    items.extend([
-        &capture as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
-        &repeat,
-        &window,
-        &screen,
-        &timed,
-        &sep1,
-    ]);
-    let mut recent_items = Vec::new();
-    for record in &recent {
-        let label = format!("{} · {}×{}", record.date, record.pixel_width, record.pixel_height);
-        recent_items.push(MenuItem::with_id(app, format!("recent-{}", record.id), label, true, None::<&str>)?);
-    }
-    let pinned_items: Vec<MenuItem<tauri::Wry>> = pinned
-        .iter()
-        .filter(|record| record.pinned)
-        .map(|record| MenuItem::with_id(app, format!("pin-{}", record.id), record.window_title.clone().unwrap_or_else(|| record.id.clone()), true, None::<&str>))
-        .collect::<tauri::Result<Vec<_>>>()?;
-    let pinned_menu = Submenu::with_items(app, "Pinned images", true, &pinned_items.iter().map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect::<Vec<_>>())?;
-
-    let mut menu = Menu::new(app)?;
-    menu.append(&capture)?;
+    let region_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.region)).unwrap_or_default();
+    let repeat_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.repeat_last)).unwrap_or_default();
+    let window_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.window)).unwrap_or_default();
+    let screen_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.full_screen)).unwrap_or_default();
+    let history_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.history)).unwrap_or_default();
+    let region = action(app, "capture-region", "Region", some_accel(&region_accel))?;
+    let repeat = action(app, "capture-repeat", "Repeat last region", some_accel(&repeat_accel))?;
+    let window = action(app, "capture-window", "Window", some_accel(&window_accel))?;
+    let screen = action(app, "capture-screen", "Full screen", some_accel(&screen_accel))?;
+    let scrolling = action(app, "capture-scroll", "Scrolling…", Some("Alt+Cmd+Shift+S"))?;
+    let timed_3 = action(app, "timed-3", "3 seconds", None)?;
+    let timed_5 = action(app, "timed-5", "5 seconds", None)?;
+    let timed_10 = action(app, "timed-10", "10 seconds", None)?;
+    let timed = Submenu::with_items(app, "Timed", true, &[&timed_3, &timed_5, &timed_10])?;
+    let copy_text = action(app, "capture-text", "Copy text from screen", Some("Alt+Cmd+Shift+O"))?;
+    let sep_recent = PredefinedMenuItem::separator(app)?;
+    let history = action(app, "history", "Show History", some_accel(&history_accel))?;
+    let sep_file = PredefinedMenuItem::separator(app)?;
+    let open_image = action(app, "open-image", "Open image…", Some("Cmd+O"))?;
+    let clipboard = action(app, "clipboard", "Edit image from clipboard", Some("Cmd+Shift+V"))?;
+    let pinned = pinned_menu(app)?;
+    menu.append(&region)?;
     menu.append(&repeat)?;
     menu.append(&window)?;
     menu.append(&screen)?;
+    menu.append(&scrolling)?;
     menu.append(&timed)?;
-    menu.append(&sep1)?;
-    for item in &recent_items {
-        menu.append(item)?;
-    }
+    menu.append(&copy_text)?;
+    menu.append(&sep_recent)?;
     menu.append(&history)?;
+    menu.append(&sep_file)?;
     menu.append(&open_image)?;
     menu.append(&clipboard)?;
-    menu.append(&pinned_menu)?;
-    menu.append(&sep2)?;
-    menu.append(&settings)?;
-    menu.append(&quit)?;
-    let _ = items;
-    Ok(menu)
+    menu.append(&pinned)?;
+    if include_app_commands {
+        let sep = PredefinedMenuItem::separator(app)?;
+        let settings_item = action(app, "settings", "Settings…", Some("Cmd+,"))?;
+        let quit = action(app, "quit", "Quit Shotsmith", Some("Cmd+Q"))?;
+        menu.append(&sep)?;
+        menu.append(&settings_item)?;
+        menu.append(&quit)?;
+    }
+    Ok(())
+}
+
+trait AppendMenu {
+    fn append(&self, item: &dyn tauri::menu::IsMenuItem<tauri::Wry>) -> tauri::Result<()>;
+}
+
+impl AppendMenu for Menu<tauri::Wry> {
+    fn append(&self, item: &dyn tauri::menu::IsMenuItem<tauri::Wry>) -> tauri::Result<()> {
+        Menu::append(self, item)
+    }
+}
+
+impl AppendMenu for Submenu<tauri::Wry> {
+    fn append(&self, item: &dyn tauri::menu::IsMenuItem<tauri::Wry>) -> tauri::Result<()> {
+        Submenu::append(self, item)
+    }
+}
+
+fn action(app: &tauri::AppHandle, id: &str, label: &str, accelerator: Option<&str>) -> tauri::Result<MenuItem<tauri::Wry>> {
+    MenuItem::with_id(app, id, label, true, accelerator)
+}
+
+fn some_accel(value: &str) -> Option<&str> {
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn pinned_menu(app: &tauri::AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
+    let state = app.state::<AppState>();
+    let pinned = state.history.lock().ok().and_then(|db| db.list(20).ok()).unwrap_or_default();
+    let items: Vec<MenuItem<tauri::Wry>> = pinned
+        .iter()
+        .filter(|record| record.pinned)
+        .map(|record| {
+            let label = record.window_title.clone().filter(|title| !title.is_empty()).unwrap_or_else(|| "Pinned capture".into());
+            MenuItem::with_id(app, format!("pin-{}", record.id), label, true, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    if items.is_empty() {
+        let empty = action(app, "pin-empty", "No pinned images", None)?;
+        empty.set_enabled(false)?;
+        return Submenu::with_items(app, "Pinned images", true, &[&empty]);
+    }
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|item| item as _).collect();
+    Submenu::with_items(app, "Pinned images", true, &refs)
 }
 
 fn on_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
@@ -268,16 +379,35 @@ fn on_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
         "capture-repeat" => {
             commands::capture_repeat(app.clone(), state)?;
         }
-        "capture-timed" => commands::capture_countdown(app.clone(), state)?,
+        "capture-scroll" => {
+            app.dialog()
+                .message("Scrolling capture is not in this version yet.")
+                .kind(MessageDialogKind::Info)
+                .show(|_| {});
+        }
+        "capture-text" => {
+            app.dialog()
+                .message("Copy text from the screen is not in this version yet.")
+                .kind(MessageDialogKind::Info)
+                .show(|_| {});
+        }
+        "timed-3" | "timed-5" | "timed-10" => {
+            if let Ok(seconds) = id.trim_start_matches("timed-").parse::<u32>() {
+                if let Ok(mut settings) = state.settings.lock() {
+                    settings.timed_seconds = seconds;
+                }
+            }
+            commands::capture_countdown(app.clone(), state)?;
+        }
         "history" => commands::open_history(app.clone())?,
         "open-image" => commands::open_image(app.clone(), state)?,
         "clipboard" => commands::edit_clipboard(app.clone(), state)?,
         "settings" => commands::open_settings(app.clone())?,
         "quit" => app.exit(0),
-        other if other.starts_with("recent-") => {
+        other if other.starts_with("recent-") && other != "recent-empty" => {
             commands::editor_open(app.clone(), state, other.trim_start_matches("recent-").into())?;
         }
-        other if other.starts_with("pin-") => {
+        other if other.starts_with("pin-") && other != "pin-empty" => {
             commands::pin_open(app.clone(), state, other.trim_start_matches("pin-").into())?;
         }
         _ => {}
@@ -286,41 +416,23 @@ fn on_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
 }
 
 fn parse_shortcut(raw: &str) -> Option<Shortcut> {
-    let mut mods = Modifiers::empty();
-    let mut code = None;
-    for part in raw.split('+') {
-        match part.trim().to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => mods |= Modifiers::CONTROL,
-            "alt" | "option" => mods |= Modifiers::ALT,
-            "shift" => mods |= Modifiers::SHIFT,
-            "super" | "cmd" | "command" | "meta" | "win" => mods |= Modifiers::SUPER,
-            "digit1" | "1" => code = Some(Code::Digit1),
-            "digit2" | "2" => code = Some(Code::Digit2),
-            "keyy" | "y" => code = Some(Code::KeyY),
-            "keyh" | "h" => code = Some(Code::KeyH),
-            _ => {}
-        }
+    let raw = raw.trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Shortcut::from_str(raw).ok()
     }
-    Some(Shortcut::new(Some(mods), code?))
 }
 
-fn shortcut_name(shortcut: &Shortcut) -> String {
-    format!("{shortcut:?}").to_ascii_lowercase()
+fn same_shortcut(shortcut: &Shortcut, raw: &str) -> bool {
+    parse_shortcut(raw).is_some_and(|parsed| parsed.id() == shortcut.id())
 }
 
-fn normalize(raw: &str) -> String {
-    parse_shortcut(raw).map(|shortcut| shortcut_name(&shortcut)).unwrap_or_default()
-}
-
-fn shortcut_label(raw: &str) -> String {
-    raw.replace("super", "⌘")
-        .replace("control", "Ctrl")
-        .replace("shift", "Shift")
-        .replace("alt", "Alt")
-        .replace("digit2", "2")
-        .replace("digit1", "1")
-        .replace("keyy", "Y")
-        .replace("keyh", "H")
-        .replace('+', "")
+fn accelerator(raw: &str) -> String {
+    if parse_shortcut(raw).is_some() {
+        raw.to_string()
+    } else {
+        String::new()
+    }
 }
 

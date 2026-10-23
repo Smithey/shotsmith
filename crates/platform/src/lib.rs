@@ -53,15 +53,137 @@ pub enum PermissionState {
 }
 
 pub fn permission_status() -> PermissionState {
-    match Monitor::all() {
-        Ok(list) if !list.is_empty() => PermissionState::Granted,
-        Ok(_) => PermissionState::Denied {
-            reason: "No displays were found.".into(),
-        },
-        Err(err) => PermissionState::Denied {
-            reason: err.to_string(),
-        },
+    if !screen_recording_granted() {
+        return PermissionState::Denied {
+            reason: "Screen Recording is off for Shotsmith.".into(),
+        };
     }
+    PermissionState::Granted
+}
+
+pub fn accessibility_granted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe { AXIsProcessTrusted() != 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+pub fn request_accessibility() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe {
+            let key = kAXTrustedCheckOptionPrompt;
+            let value = kCFBooleanTrue;
+            let options = CFDictionaryCreate(
+                std::ptr::null(),
+                &key,
+                &value,
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks,
+            );
+            let trusted = AXIsProcessTrustedWithOptions(options) != 0;
+            if !options.is_null() {
+                CFRelease(options);
+            }
+            trusted
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+pub fn screen_recording_granted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe { CGPreflightScreenCaptureAccess() != 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+pub fn request_screen_recording() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe { CGRequestScreenCaptureAccess() != 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+pub fn open_system_settings(pane: &str) -> PlatformResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let urls: &[&str] = match pane {
+            "keyboard" => &["x-apple.systempreferences:com.apple.preference.keyboard"],
+            "accessibility" => &[
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+            ],
+            _ => &[
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
+            ],
+        };
+        let mut last = "System Settings did not open.".to_string();
+        for url in urls {
+            match std::process::Command::new("open").arg(url).status() {
+                Ok(status) if status.success() => return Ok(()),
+                Ok(status) => last = format!("System Settings did not open ({status})."),
+                Err(err) => last = err.to_string(),
+            }
+        }
+        return Err(PlatformError::Message(last));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pane;
+        Err(PlatformError::Message(
+            "Open the system privacy settings for screen capture.".into(),
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> u8;
+    fn CGRequestScreenCaptureAccess() -> u8;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> u8;
+    fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> u8;
+    static kAXTrustedCheckOptionPrompt: *const std::ffi::c_void;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    static kCFBooleanTrue: *const std::ffi::c_void;
+    static kCFTypeDictionaryKeyCallBacks: u8;
+    static kCFTypeDictionaryValueCallBacks: u8;
+    fn CFDictionaryCreate(
+        allocator: *const std::ffi::c_void,
+        keys: *const *const std::ffi::c_void,
+        values: *const *const std::ffi::c_void,
+        num_values: isize,
+        key_callbacks: *const u8,
+        value_callbacks: *const u8,
+    ) -> *const std::ffi::c_void;
+    fn CFRelease(item: *const std::ffi::c_void);
 }
 
 pub fn displays() -> PlatformResult<Vec<DisplayInfo>> {

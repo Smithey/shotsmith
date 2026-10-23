@@ -77,10 +77,10 @@ impl Default for Settings {
                 "save".into(),
                 "annotate".into(),
                 "pin".into(),
+                "share".into(),
+                "copy-text".into(),
                 "preset:builtin-docs-png".into(),
-                "preset:builtin-bug".into(),
-                "preset:builtin-webp".into(),
-                "preset:builtin-pdf".into(),
+                "open-in".into(),
             ],
             donut_count: 8,
             history_limit: 50,
@@ -115,6 +115,7 @@ pub struct DonutPayload {
     pub width: u32,
     pub height: u32,
     pub image_path: String,
+    pub preview: String,
     pub slots: Vec<DonutSlotPayload>,
     pub cursor_x: i32,
     pub cursor_y: i32,
@@ -165,6 +166,7 @@ pub struct AppState {
     pub editor: Mutex<Option<EditorSession>>,
     pub donut: Mutex<Option<DonutPayload>>,
     pub hud: Mutex<Option<HudPayload>>,
+    pub capture_mode: Mutex<String>,
 }
 
 pub fn app_root() -> PathBuf {
@@ -191,7 +193,15 @@ pub fn load_presets(root: &Path) -> Vec<Preset> {
     let path = root.join("presets.json");
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|text| serde_json::from_str::<Vec<Preset>>(&text).ok())
+        .map(|mut list| {
+            for preset in &mut list {
+                if preset.id == "builtin-docs-png" && preset.name == "Docs PNG" {
+                    preset.name = "Save PNG".into();
+                }
+            }
+            list
+        })
         .unwrap_or_else(|| builtin_presets(&folder))
 }
 

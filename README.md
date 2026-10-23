@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" width="96" height="96" alt="Shotsmith logo: an anvil with a dashed selection frame">
+<img src="docs/assets/icon.png" width="96" height="96" alt="Shotsmith logo: an anvil with a dashed selection frame">
 
 # Shotsmith
 

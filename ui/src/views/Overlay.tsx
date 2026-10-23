@@ -15,6 +15,8 @@ export function Overlay() {
   const [includeCursor, setIncludeCursor] = useState(false);
   const [error, setError] = useState("");
   const drag = useRef<{ x: number; y: number; rect: Rect; handle: string } | null>(null);
+  const draftRef = useRef<Rect | null>(null);
+  const confirming = useRef(false);
   const imgRef = useRef<HTMLImageElement>(null);
   const loupeRef = useRef<HTMLCanvasElement>(null);
   const pixels = useRef<ImageData | null>(null);
@@ -29,6 +31,8 @@ export function Overlay() {
     setSettings(prefs);
     setLoupeOn(prefs.loupe);
     setIncludeCursor(prefs.includeCursor);
+    const captureMode = await api.captureMode().catch(() => "region");
+    if (captureMode === "window" || captureMode === "screen" || captureMode === "region") setMode(captureMode);
     setWindows(await api.windows().catch(() => []));
   }
 
@@ -96,16 +100,24 @@ export function Overlay() {
   }
 
   function onDown(event: React.PointerEvent) {
-    if (!display || mode === "screen") return;
+    if (!display) return;
+    if ((event.target as HTMLElement).closest("button")) return;
     const p = point(event);
+    if (mode === "screen") {
+      confirm({ x: 0, y: 0, w: display.width, h: display.height });
+      return;
+    }
     if (mode === "window") {
-      const hit = windows.find((win) => p.x + display.x >= win.x && p.y + display.y >= win.y && p.x + display.x <= win.x + win.width && p.y + display.y <= win.y + win.height);
+      const scale = display.scale || 1;
+      const gx = display.x + p.x / scale;
+      const gy = display.y + p.y / scale;
+      const hit = windows.find((win) => gx >= win.x && gy >= win.y && gx <= win.x + win.width && gy <= win.y + win.height);
       if (hit) {
         confirm({
-          x: hit.x - display.x,
-          y: hit.y - display.y,
-          w: hit.width,
-          h: hit.height,
+          x: (hit.x - display.x) * scale,
+          y: (hit.y - display.y) * scale,
+          w: hit.width * scale,
+          h: hit.height * scale,
         }, hit.id, hit.appName, hit.title);
       }
       return;
@@ -137,17 +149,25 @@ export function Overlay() {
       h *= 2;
     }
     const next = normalize({ x, y, w, h });
+    draftRef.current = next;
     setDraft(next);
   }
 
   function onUp() {
-    if (draft && draft.w > 2 && draft.h > 2) setRect(draft);
+    const next = draftRef.current ?? draft;
+    draftRef.current = null;
+    const drew = drag.current?.handle === "new";
     setDraft(null);
     drag.current = null;
+    if (mode === "region" && drew && next && next.w > 8 && next.h > 8) {
+      setRect(next);
+      confirm(next);
+    }
   }
 
   function confirm(target: Rect, windowId?: number, sourceApp?: string, windowTitle?: string) {
-    if (!display) return;
+    if (!display || confirming.current) return;
+    confirming.current = true;
     if (settings?.sound) beep();
     api.confirm({
       displayId: display.id,
@@ -162,7 +182,10 @@ export function Overlay() {
       cursorX: cursor.x,
       cursorY: cursor.y,
       mode: windowId ? "window" : "region",
-    }).catch((err: Error) => setError(err.message));
+    }).catch((err: Error) => {
+      confirming.current = false;
+      setError(err.message);
+    });
   }
 
   function drawLoupe(p: { x: number; y: number }) {
@@ -193,26 +216,33 @@ export function Overlay() {
   const shown = draft ?? rect;
   const scale = display?.scale || 1;
   const hot = mode === "window" && display
-    ? windows.find((win) => cursor.x + display.x >= win.x && cursor.y + display.y >= win.y && cursor.x + display.x <= win.x + win.width && cursor.y + display.y <= win.y + win.height)
+    ? windows.find((win) => {
+        const gx = display.x + cursor.x / scale;
+        const gy = display.y + cursor.y / scale;
+        return gx >= win.x && gy >= win.y && gx <= win.x + win.width && gy <= win.y + win.height;
+      })
     : undefined;
+  const loupeLeft = display ? Math.min(Math.max(12, cursor.x / scale + 28), display.width / scale - 168) : 16;
+  const loupeTop = display ? Math.min(Math.max(12, cursor.y / scale + 28), display.height / scale - 190) : 16;
 
   return (
     <div className="overlay" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onDoubleClick={() => rect && confirm(rect)}>
-      {display && <img ref={imgRef} className="frozen" src={assetUrl(display.imagePath)} alt="" />}
+      {display && <img key={display.imagePath} ref={imgRef} className="frozen" src={assetUrl(display.imagePath)} alt="" />}
       {hot && display && (
         <div className="window-hot" style={{ left: hot.x - display.x, top: hot.y - display.y, width: hot.width, height: hot.height }} />
       )}
       {shown && (
         <div className="shade" style={{ left: shown.x / scale, top: shown.y / scale, width: shown.w / scale, height: shown.h / scale }}>
-          <div className="size-label" style={{ top: -28, left: 0 }}>
+          {["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((handle) => <i key={handle} className={`handle ${handle}`} />)}
+          <div className="size-label" style={{ top: shown.y / scale < 40 ? 8 : -36, left: 0 }}>
             {Math.round(shown.w / scale)} × {Math.round(shown.h / scale)} pt
             <br />
             {Math.round(shown.w)} × {Math.round(shown.h)} px @{scale}x
           </div>
         </div>
       )}
-      {loupeOn && (
-        <div className="loupe" style={{ left: 16, top: 16 }}>
+      {loupeOn && mode !== "window" && (
+        <div className="loupe" style={{ left: loupeLeft, top: loupeTop }}>
           <canvas ref={loupeRef} />
           <p>x {Math.round(cursor.x)} y {Math.round(cursor.y)}<br />{hex || "-"} · ⌘C copies</p>
         </div>
@@ -220,7 +250,7 @@ export function Overlay() {
       {error && <p className="error" style={{ position: "absolute", top: 12, left: 12 }}>{error}</p>}
       {settings?.overlayToolbar !== false && (
         <>
-          <div className="hint">Space window · Shift lock aspect · Alt from centre · Arrows nudge · Tab loupe · Esc cancel</div>
+          <div className="hint">{mode === "window" ? "Click a window to capture it · Space for a region · Esc cancel" : mode === "screen" ? "Click to capture this display · Esc cancel" : "Release to capture · Shift locks aspect · Space for windows · Esc cancel"}</div>
           <div className="toolbar">
             {(["region", "window", "screen"] as const).map((item) => (
               <button key={item} className={mode === item ? "active" : ""} onClick={(event) => { event.stopPropagation(); setMode(item); if (item === "screen" && display) confirm({ x: 0, y: 0, w: display.width, h: display.height }); }}>{item[0].toUpperCase() + item.slice(1)}</button>

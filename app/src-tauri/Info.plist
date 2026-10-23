@@ -6,5 +6,7 @@
 	<string>Shotsmith captures the screen when you take a screenshot.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Shotsmith reveals saved screenshots in Finder.</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 </dict>
 </plist>

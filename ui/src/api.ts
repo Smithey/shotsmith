@@ -77,6 +77,7 @@ export type DonutState = {
   width: number;
   height: number;
   imagePath: string;
+  preview: string;
   slots: { id: string; label: string; key: string }[];
   cursorX: number;
   cursorY: number;
@@ -127,9 +128,47 @@ export async function onRefresh(run: () => void): Promise<() => void> {
   return unlisten;
 }
 
+let shortcutTail: Promise<void> = Promise.resolve();
+let shortcutIntent: "live" | "held" = "live";
+let shortcutApplied: "live" | "held" = "live";
+
+function queueShortcuts(task: () => Promise<void>): Promise<void> {
+  const run = shortcutTail.then(task, task);
+  shortcutTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function applyShortcutIntent(): Promise<void> {
+  const want = shortcutIntent;
+  if (want === shortcutApplied) return;
+  if (want === "held") await invoke<void>("shortcuts_suspend");
+  else await invoke<void>("shortcuts_reload");
+  shortcutApplied = want;
+  if (shortcutIntent !== shortcutApplied) await applyShortcutIntent();
+}
+
+export function holdShortcuts(): Promise<void> {
+  shortcutIntent = "held";
+  return queueShortcuts(applyShortcutIntent);
+}
+
+export function releaseShortcuts(): Promise<void> {
+  shortcutIntent = "live";
+  return queueShortcuts(applyShortcutIntent);
+}
+
 export const api = {
   settings: () => invoke<Settings>("settings_get"),
-  saveSettings: (settings: Settings) => invoke<void>("settings_set", { settings }),
+  saveSettings: (settings: Settings) => {
+    shortcutIntent = "live";
+    return queueShortcuts(async () => {
+      await invoke<void>("settings_set", { settings });
+      shortcutApplied = "live";
+      if (shortcutIntent !== shortcutApplied) await applyShortcutIntent();
+    });
+  },
+  holdShortcuts,
+  releaseShortcuts,
   presets: () => invoke<Preset[]>("presets_list"),
   savePreset: (preset: Preset) => invoke<Preset[]>("presets_save", { preset }),
   deletePreset: (id: string) => invoke<Preset[]>("presets_delete", { id }),
@@ -137,11 +176,16 @@ export const api = {
   exportPresets: () => invoke<string>("presets_export"),
   filenamePreview: (pattern: string, width: number, height: number) =>
     invoke<string>("filename_preview", { pattern, width, height }),
-  permission: () => invoke<{ state: string; reason?: string }>("permission_status"),
+  permission: () => invoke<{ state: string; reason?: string; screenRecording?: boolean; accessibility?: boolean }>("permission_status"),
   platform: () => invoke<string>("platform_name"),
   windows: () => invoke<WindowInfo[]>("capture_windows"),
   overlays: () => invoke<DisplayInfo[]>("overlay_state"),
   begin: (mode: string) => invoke<void>("capture_begin", { mode }),
+  captureMode: () => invoke<string>("capture_mode"),
+  openScreenSettings: () => invoke<void>("open_screen_settings"),
+  openAccessibilitySettings: () => invoke<void>("open_accessibility_settings"),
+  openKeyboardSettings: () => invoke<void>("open_keyboard_settings"),
+  relaunch: () => invoke<void>("relaunch"),
   cancel: () => invoke<void>("capture_cancel"),
   confirm: (args: Record<string, unknown>) => invoke<string>("capture_confirm", args),
   repeat: () => invoke<string>("capture_repeat"),
@@ -149,6 +193,7 @@ export const api = {
   countdownDone: () => invoke<void>("capture_countdown_done"),
   history: (query: string) => invoke<HistoryItem[]>("history_list", { query }),
   deleteHistory: (id: string) => invoke<void>("history_delete", { id }),
+  copyHistory: (id: string) => invoke<void>("history_copy", { id }),
   openEditor: (id: string) => invoke<void>("editor_open", { id }),
   editor: () => invoke<EditorState>("editor_state"),
   commit: (document: Document) => invoke<EditorState>("editor_commit", { document }),
@@ -175,6 +220,7 @@ export const api = {
   pickSave: (suggested: string) => invoke<string | null>("pick_save", { suggested }),
   copyHex: (text: string) => invoke<void>("copy_hex", { text }),
   quit: () => invoke<void>("quit"),
+  featureNotice: (message: string) => invoke<void>("feature_notice", { message }),
 };
 
 export function currentWindow() {
