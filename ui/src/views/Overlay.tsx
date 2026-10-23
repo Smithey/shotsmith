@@ -61,10 +61,25 @@ export function Overlay() {
     };
   }, [display?.imagePath]);
 
+  function resetCapture() {
+    // The overlay window is reused, so each capture has to start clean.
+    drag.current = null;
+    draftRef.current = null;
+    confirming.current = false;
+    setRect(null);
+    setDraft(null);
+    setError("");
+  }
+
   useEffect(() => {
+    resetCapture();
     load().catch((err: Error) => setError(err.message));
     let stop = () => {};
-    onRefresh(() => { load().catch((err: Error) => setError(err.message)); }).then((un) => { stop = un; });
+    onRefresh((payload) => {
+      if (payload === "history" || payload === "status-menu") return;
+      resetCapture();
+      load().catch((err: Error) => setError(err.message));
+    }).then((un) => { stop = un; });
     return () => stop();
   }, []);
 
@@ -123,7 +138,11 @@ export function Overlay() {
       return;
     }
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    drag.current = { x: p.x, y: p.y, rect: rect ?? { x: p.x, y: p.y, w: 0, h: 0 }, handle: "new" };
+    confirming.current = false;
+    draftRef.current = null;
+    setRect(null);
+    setDraft(null);
+    drag.current = { x: p.x, y: p.y, rect: { x: p.x, y: p.y, w: 0, h: 0 }, handle: "new" };
   }
 
   function onMove(event: React.PointerEvent) {
@@ -182,6 +201,12 @@ export function Overlay() {
       cursorX: cursor.x,
       cursorY: cursor.y,
       mode: windowId ? "window" : "region",
+    }).then(() => {
+      confirming.current = false;
+      drag.current = null;
+      draftRef.current = null;
+      setRect(null);
+      setDraft(null);
     }).catch((err: Error) => {
       confirming.current = false;
       setError(err.message);

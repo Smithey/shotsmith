@@ -29,6 +29,11 @@ pub struct CaptureRecord {
     pub original_path: String,
     pub document_path: Option<String>,
     pub pinned: bool,
+    /// Flattened thumbnail written beside the original. Not stored in the database.
+    #[serde(default)]
+    pub preview_path: Option<String>,
+    #[serde(default)]
+    pub preview_rev: u64,
 }
 
 pub struct HistoryDb {
@@ -186,6 +191,8 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureRecord> {
         original_path: row.get(8)?,
         document_path: row.get(9)?,
         pinned: row.get::<_, i32>(10)? != 0,
+        preview_path: None,
+        preview_rev: 0,
     })
 }
 
@@ -219,6 +226,8 @@ mod tests {
             original_path: format!("/tmp/{id}.png"),
             document_path: None,
             pinned: false,
+            preview_path: None,
+            preview_rev: 0,
         }
     }
 

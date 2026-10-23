@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use shotsmith_core::{builtin_presets, Document, Preset, UndoStack};
 use shotsmith_history::HistoryDb;
 use shotsmith_platform::FrozenDisplay;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -144,6 +145,9 @@ pub struct EditorSession {
     pub stack: UndoStack,
     pub image_path: String,
     pub dirty: bool,
+    /// Pixel snapshots lined up with the undo stack. `None` means that step did not change the image.
+    pub pixels_past: Vec<Option<Vec<u8>>>,
+    pub pixels_future: Vec<Option<Vec<u8>>>,
 }
 
 #[derive(Clone)]
@@ -163,7 +167,7 @@ pub struct AppState {
     pub frozen: Mutex<Option<Vec<FrozenDisplay>>>,
     pub displays: Mutex<Vec<DisplayPayload>>,
     pub last_region: Mutex<Option<LastRegion>>,
-    pub editor: Mutex<Option<EditorSession>>,
+    pub editors: Mutex<HashMap<String, EditorSession>>,
     pub donut: Mutex<Option<DonutPayload>>,
     pub hud: Mutex<Option<HudPayload>>,
     pub capture_mode: Mutex<String>,

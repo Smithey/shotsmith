@@ -45,7 +45,18 @@ export function Hud() {
         <strong>{left != null ? `Capturing in ${left}` : state.title}</strong>
         <div>{state.detail}</div>
       </div>
-      {state.captureId && <button onClick={() => api.openEditor(state.captureId)}>Edit</button>}
+      {state.captureId && (
+        <button
+          type="button"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            void api.openEditor(state.captureId);
+          }}
+        >
+          Edit
+        </button>
+      )}
     </div>
   );
 }

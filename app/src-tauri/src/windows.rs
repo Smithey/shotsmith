@@ -6,6 +6,27 @@ use tauri::{
 };
 use tauri::window::Color;
 
+pub fn is_document_window(label: &str) -> bool {
+    matches!(label, "onboarding" | "settings" | "history") || label.starts_with("editor-")
+}
+
+pub fn reveal_documents(app: &AppHandle) {
+    let mut focus = None;
+    for (label, window) in app.webview_windows() {
+        if !is_document_window(&label) {
+            continue;
+        }
+        let _ = window.unminimize();
+        let _ = window.show();
+        if label.starts_with("editor-") || focus.is_none() {
+            focus = Some(window);
+        }
+    }
+    if let Some(window) = focus {
+        let _ = window.set_focus();
+    }
+}
+
 static MENU_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
 static MENU_SHOWN_AT: AtomicU64 = AtomicU64::new(0);
 static MENU_FOCUS_RETRY: AtomicBool = AtomicBool::new(false);
@@ -33,9 +54,14 @@ pub fn open_view(
         let _ = window.unminimize();
         let _ = window.set_focus();
         let _ = app.emit("refresh", label);
+        if is_document_window(label) {
+            apply_appearance(app);
+            sync_dock(app);
+        }
         return Ok(());
     }
     let capture = label.starts_with("overlay-");
+    let chrome = is_document_window(label);
     let url = WebviewUrl::App(format!("index.html?view={view}").into());
     let builder = WebviewWindowBuilder::new(app, label, url)
         .title(title)
@@ -48,12 +74,184 @@ pub fn open_view(
         .skip_taskbar(transparent || label == "hud" || label == "donut" || label.starts_with("pin-"))
         .resizable(decorations)
         .shadow(!transparent && !capture)
-        .visible(true)
+        .visible(!chrome)
         .focused(label != "hud")
-        .accept_first_mouse(capture || label == "donut")
+        .accept_first_mouse(capture || label == "donut" || label == "hud")
         .content_protected(capture);
-    builder.build().map_err(|err| err.to_string())?;
+    let window = builder.build().map_err(|err| err.to_string())?;
+    if chrome {
+        watch_window(app, &window);
+        list_in_dock(&window);
+        apply_appearance(app);
+        let _ = window.show();
+        let _ = window.set_focus();
+        sync_dock(app);
+    }
     Ok(())
+}
+
+fn stored_appearance(app: &AppHandle) -> String {
+    app.try_state::<AppState>()
+        .and_then(|state| state.settings.lock().ok().map(|settings| settings.appearance.clone()))
+        .unwrap_or_else(|| "system".into())
+}
+
+/// Header rows are 52pt. The system keeps the traffic lights in the short
+/// titlebar, so a two-line title ends up with the subtitle hanging below them.
+fn place_traffic_lights(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSAutoresizingMaskOptions, NSWindow, NSWindowButton};
+        use objc2_core_foundation::CGPoint;
+        const BAR: f64 = 52.0;
+        let Some(_main) = MainThreadMarker::new() else {
+            return;
+        };
+        let Ok(raw) = window.ns_window() else {
+            return;
+        };
+        let Some(ptr) = std::ptr::NonNull::new(raw as *mut NSWindow) else {
+            return;
+        };
+        let ns = unsafe { ptr.as_ref() };
+        let Some(content) = ns.contentView() else {
+            return;
+        };
+        let content_height = content.frame().size.height;
+        for kind in [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton] {
+            let Some(button) = ns.standardWindowButton(kind) else {
+                continue;
+            };
+            let frame = button.frame();
+            let Some(parent) = (unsafe { button.superview() }) else {
+                continue;
+            };
+            let in_window = parent.convertPoint_toView(frame.origin, None);
+            let y = content_height - BAR + (BAR - frame.size.height) / 2.0;
+            let placed = parent.convertPoint_fromView(CGPoint::new(in_window.x, y), None);
+            button.setFrameOrigin(placed);
+            button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+        }
+    }
+}
+
+fn seat_traffic_lights(window: &tauri::WebviewWindow) {
+    place_traffic_lights(window);
+    let window = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let again = window.clone();
+        let _ = window.run_on_main_thread(move || place_traffic_lights(&again));
+    });
+}
+
+fn list_in_dock(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindow;
+        let Ok(raw) = window.ns_window() else {
+            return;
+        };
+        let Some(ptr) = std::ptr::NonNull::new(raw as *mut NSWindow) else {
+            return;
+        };
+        unsafe { ptr.as_ref().setExcludedFromWindowsMenu(false) };
+    }
+}
+
+fn paint_chrome(window: &tauri::WebviewWindow, appearance: &str) {
+    let dark = match appearance {
+        "dark" => true,
+        "light" => false,
+        _ => matches!(window.theme().ok(), Some(tauri::Theme::Dark)),
+    };
+    let color = if dark { Color(28, 28, 30, 255) } else { Color(255, 255, 255, 255) };
+    let _ = window.set_background_color(Some(color));
+}
+
+/// Follow the Appearance setting. `system` leaves the window on the OS theme.
+pub fn apply_appearance(app: &AppHandle) {
+    let appearance = stored_appearance(app);
+    let theme = match appearance.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    for (_, window) in app.webview_windows() {
+        let _ = window.set_theme(theme);
+    }
+    for (label, window) in app.webview_windows() {
+        if is_document_window(&label) {
+            paint_chrome(&window, &appearance);
+        }
+    }
+}
+
+pub fn sync_dock(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        let _ = app.clone().run_on_main_thread(move || apply_dock(&app));
+    }
+}
+
+fn watch_window(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let app = app.clone();
+    let label = window.label().to_string();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Destroyed => {
+            if let Some(id) = label.strip_prefix("editor-") {
+                let id = id.to_string();
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut editors) = state.editors.lock() {
+                        editors.remove(&id);
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let queued = app.clone();
+                let _ = app.run_on_main_thread(move || apply_dock(&queued));
+            }
+        }
+        tauri::WindowEvent::Resized(_) if label == "settings" || label == "history" || label.starts_with("editor-") => {
+            let queued = app.clone();
+            let label = label.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(window) = queued.get_webview_window(&label) {
+                    place_traffic_lights(&window);
+                }
+            });
+        }
+        tauri::WindowEvent::ThemeChanged(_) => {
+            let queued = app.clone();
+            let label = label.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(window) = queued.get_webview_window(&label) {
+                    paint_chrome(&window, &stored_appearance(&queued));
+                }
+            });
+        }
+        _ => {}
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn apply_dock(app: &AppHandle) {
+    let pinned = app
+        .try_state::<AppState>()
+        .and_then(|state| state.settings.lock().ok().map(|settings| settings.show_dock_icon))
+        .unwrap_or(false);
+    let open = app.webview_windows().into_iter().any(|(label, window)| {
+        is_document_window(&label) && window.is_visible().unwrap_or(false)
+    });
+    let policy = if pinned || open {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app.set_activation_policy(policy);
 }
 
 pub fn dismiss_donut(app: &AppHandle) {
@@ -227,6 +425,8 @@ pub fn open_history(app: &AppHandle) -> Result<(), String> {
         let _ = window.unminimize();
         let _ = window.set_focus();
         let _ = app.emit("refresh", "history");
+        apply_appearance(app);
+        sync_dock(app);
         return Ok(());
     }
     let url = WebviewUrl::App("index.html?view=history".into());
@@ -238,11 +438,18 @@ pub fn open_history(app: &AppHandle) -> Result<(), String> {
         .decorations(true)
         .resizable(true)
         .background_color(Color(255, 255, 255, 255))
-        .visible(true)
+        .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
-    builder.build().map_err(|err| err.to_string())?;
+    let window = builder.build().map_err(|err| err.to_string())?;
+    watch_window(app, &window);
+    list_in_dock(&window);
+    seat_traffic_lights(&window);
+    apply_appearance(app);
+    let _ = window.show();
+    let _ = window.set_focus();
+    sync_dock(app);
     Ok(())
 }
 
@@ -251,6 +458,8 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        apply_appearance(app);
+        sync_dock(app);
         return Ok(());
     }
     let url = WebviewUrl::App("index.html?view=settings".into());
@@ -262,36 +471,74 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
         .decorations(true)
         .resizable(true)
         .background_color(Color(255, 255, 255, 255))
-        .visible(true)
+        .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
-    builder.build().map_err(|err| err.to_string())?;
+    let window = builder.build().map_err(|err| err.to_string())?;
+    watch_window(app, &window);
+    list_in_dock(&window);
+    seat_traffic_lights(&window);
+    apply_appearance(app);
+    let _ = window.show();
+    let _ = window.set_focus();
+    sync_dock(app);
     Ok(())
 }
 
-pub fn open_editor(app: &AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("editor") {
+fn unique_window_title(app: &AppHandle, label: &str, title: &str) -> String {
+    let base = if title.trim().is_empty() { "Capture" } else { title.trim() };
+    let mut candidate = base.to_string();
+    let mut n = 2;
+    loop {
+        let taken = app.webview_windows().into_iter().any(|(other, window)| {
+            other != label && window.title().ok().as_deref() == Some(candidate.as_str())
+        });
+        if !taken {
+            return candidate;
+        }
+        candidate = format!("{base} {n}");
+        n += 1;
+    }
+}
+
+pub fn open_editor(app: &AppHandle, id: &str, title: &str) -> Result<(), String> {
+    let label = format!("editor-{id}");
+    if let Some(window) = app.get_webview_window(&label) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let _ = app.emit("refresh", "editor");
+        list_in_dock(&window);
+        apply_appearance(app);
+        sync_dock(app);
         return Ok(());
     }
+    let offset = app
+        .webview_windows()
+        .keys()
+        .filter(|label| label.starts_with("editor-"))
+        .count() as f64;
     let url = WebviewUrl::App("index.html?view=editor".into());
-    let builder = WebviewWindowBuilder::new(app, "editor", url)
-        .title("Shotsmith")
+    let builder = WebviewWindowBuilder::new(app, &label, url)
+        .title(unique_window_title(app, &label, title))
         .inner_size(1360.0, 828.0)
         .min_inner_size(960.0, 640.0)
-        .position(80.0, 48.0)
+        .position(80.0 + offset * 28.0, 48.0 + offset * 28.0)
         .decorations(true)
         .resizable(true)
         .background_color(Color(255, 255, 255, 255))
-        .visible(true)
+        .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
-    builder.build().map_err(|err| err.to_string())?;
+    let window = builder.build().map_err(|err| err.to_string())?;
+    watch_window(app, &window);
+    list_in_dock(&window);
+    seat_traffic_lights(&window);
+    apply_appearance(app);
+    let _ = window.show();
+    let _ = window.set_focus();
+    sync_dock(app);
     Ok(())
 }
 

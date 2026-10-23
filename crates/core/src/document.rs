@@ -81,6 +81,14 @@ pub struct RectObject {
     pub radius: f32,
     pub opacity: f32,
     pub shadow: bool,
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f32,
+    #[serde(default)]
+    pub shadow_x: f32,
+    #[serde(default = "default_shadow_y")]
+    pub shadow_y: f32,
+    #[serde(default = "default_shadow_opacity")]
+    pub shadow_opacity: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
@@ -97,6 +105,14 @@ pub struct EllipseObject {
     pub fill: String,
     pub opacity: f32,
     pub shadow: bool,
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f32,
+    #[serde(default)]
+    pub shadow_x: f32,
+    #[serde(default = "default_shadow_y")]
+    pub shadow_y: f32,
+    #[serde(default = "default_shadow_opacity")]
+    pub shadow_opacity: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
@@ -111,6 +127,14 @@ pub struct LineObject {
     pub stroke: String,
     pub stroke_width: f32,
     pub shadow: bool,
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f32,
+    #[serde(default)]
+    pub shadow_x: f32,
+    #[serde(default = "default_shadow_y")]
+    pub shadow_y: f32,
+    #[serde(default = "default_shadow_opacity")]
+    pub shadow_opacity: f32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -137,6 +161,26 @@ pub struct ArrowObject {
     pub stroke: String,
     pub stroke_width: f32,
     pub shadow: bool,
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f32,
+    #[serde(default)]
+    pub shadow_x: f32,
+    #[serde(default = "default_shadow_y")]
+    pub shadow_y: f32,
+    #[serde(default = "default_shadow_opacity")]
+    pub shadow_opacity: f32,
+}
+
+fn default_shadow_blur() -> f32 {
+    8.0
+}
+
+fn default_shadow_y() -> f32 {
+    3.0
+}
+
+fn default_shadow_opacity() -> f32 {
+    0.35
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
@@ -282,6 +326,51 @@ pub fn crop_document(doc: &mut Document, x: f32, y: f32, w: f32, h: f32) {
     doc.height = h.max(1.0).round() as u32;
     for object in &mut doc.objects {
         shift_object(object, -x, -y);
+    }
+    let width = doc.width as f32;
+    let height = doc.height as f32;
+    let dropped_counter = doc.objects.iter().any(|object| {
+        matches!(object, AnnotationObject::Counter(_)) && !intersects_canvas(object, width, height)
+    });
+    doc.objects.retain(|object| intersects_canvas(object, width, height));
+    if dropped_counter {
+        renumber_counters(doc);
+    }
+}
+
+fn intersects_canvas(object: &AnnotationObject, width: f32, height: f32) -> bool {
+    let Some((x, y, w, h)) = object_bounds(object) else {
+        return true;
+    };
+    let (x0, x1) = (x.min(x + w), x.max(x + w));
+    let (y0, y1) = (y.min(y + h), y.max(y + h));
+    x0 < width && y0 < height && x1 > 0.0 && y1 > 0.0
+}
+
+fn object_bounds(object: &AnnotationObject) -> Option<(f32, f32, f32, f32)> {
+    match object {
+        AnnotationObject::Rect(o) => Some((o.x, o.y, o.w, o.h)),
+        AnnotationObject::Ellipse(o) => Some((o.x, o.y, o.w, o.h)),
+        AnnotationObject::Highlight(o) => Some((o.x, o.y, o.w, o.h)),
+        AnnotationObject::Obfuscate(o) => Some((o.x, o.y, o.w, o.h)),
+        AnnotationObject::Image(o) | AnnotationObject::Cursor(o) => Some((o.x, o.y, o.w, o.h)),
+        AnnotationObject::Line(o) => Some((o.x1.min(o.x2), o.y1.min(o.y2), (o.x2 - o.x1).abs(), (o.y2 - o.y1).abs())),
+        AnnotationObject::Arrow(o) => Some((o.x1.min(o.x2), o.y1.min(o.y2), (o.x2 - o.x1).abs(), (o.y2 - o.y1).abs())),
+        AnnotationObject::Text(o) => Some((o.x, o.y - o.size, (o.text.len() as f32 * o.size * 0.6).max(8.0), o.size + 8.0)),
+        AnnotationObject::Counter(o) => Some((o.x, o.y, o.size, o.size)),
+        AnnotationObject::Freehand(o) => {
+            let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            if o.points.is_empty() {
+                return None;
+            }
+            for point in &o.points {
+                min_x = min_x.min(point.x);
+                min_y = min_y.min(point.y);
+                max_x = max_x.max(point.x);
+                max_y = max_y.max(point.y);
+            }
+            Some((min_x, min_y, max_x - min_x, max_y - min_y))
+        }
     }
 }
 

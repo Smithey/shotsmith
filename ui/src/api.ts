@@ -70,6 +70,8 @@ export type HistoryItem = {
   originalPath: string;
   documentPath: string | null;
   pinned: boolean;
+  previewPath?: string | null;
+  previewRev?: number;
 };
 
 export type DonutState = {
@@ -115,6 +117,12 @@ export function assetUrl(path: string): string {
   return convertFileSrc(path);
 }
 
+export function shotUrl(item: { originalPath: string; previewPath?: string | null; previewRev?: number }): string {
+  const path = item.previewPath || item.originalPath;
+  const url = assetUrl(path);
+  return item.previewPath && item.previewRev ? `${url}?v=${item.previewRev}` : url;
+}
+
 export function viewName(): string {
   return new URLSearchParams(window.location.search).get("view") ?? "settings";
 }
@@ -123,8 +131,13 @@ export function queryId(): string {
   return new URLSearchParams(window.location.search).get("id") ?? "";
 }
 
-export async function onRefresh(run: () => void): Promise<() => void> {
-  const unlisten = await listen("refresh", () => run());
+export async function onRefresh(run: (payload?: unknown) => void): Promise<() => void> {
+  const unlisten = await listen("refresh", (event) => run(event.payload));
+  return unlisten;
+}
+
+export async function onHistoryChanged(run: () => void): Promise<() => void> {
+  const unlisten = await listen("history-changed", () => run());
   return unlisten;
 }
 
@@ -196,6 +209,7 @@ export const api = {
   copyHistory: (id: string) => invoke<void>("history_copy", { id }),
   openEditor: (id: string) => invoke<void>("editor_open", { id }),
   editor: () => invoke<EditorState>("editor_state"),
+  editorImage: () => invoke<string>("editor_image"),
   commit: (document: Document) => invoke<EditorState>("editor_commit", { document }),
   undo: () => invoke<EditorState>("editor_undo"),
   redo: () => invoke<EditorState>("editor_redo"),

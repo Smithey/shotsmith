@@ -16,7 +16,7 @@ use shotsmith_history::CaptureRecord;
 use shotsmith_output::{self, write_atomic};
 use shotsmith_platform::{self, PermissionState};
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use uuid::Uuid;
 
@@ -39,6 +39,8 @@ pub fn settings_set(app: AppHandle, state: State<AppState>, settings: crate::sta
     apply_autostart(&app, settings.launch_at_login)?;
     crate::register_shortcuts(&app).map_err(err_string)?;
     crate::rebuild_tray(&app).map_err(err_string)?;
+    crate::windows::sync_dock(&app);
+    crate::windows::apply_appearance(&app);
     Ok(())
 }
 
@@ -287,11 +289,15 @@ pub fn capture_countdown_done(app: AppHandle, state: State<AppState>) -> Result<
 #[tauri::command]
 pub fn history_list(state: State<AppState>, query: String) -> Result<Vec<CaptureRecord>, String> {
     let history = state.history.lock().map_err(err_string)?;
-    if query.trim().is_empty() {
-        history.list(200).map_err(err_string)
+    let mut items = if query.trim().is_empty() {
+        history.list(200).map_err(err_string)?
     } else {
-        history.search(query.trim()).map_err(err_string)
+        history.search(query.trim()).map_err(err_string)?
+    };
+    for item in &mut items {
+        attach_preview(item);
     }
+    Ok(items)
 }
 
 #[tauri::command]
@@ -321,12 +327,18 @@ pub fn editor_open(app: AppHandle, state: State<AppState>, id: String) -> Result
         let image = image::open(&record.original_path).map_err(err_string)?.to_rgba8();
         (Document::new(image.width(), image.height()), Vec::new())
     };
-    *state.editor.lock().map_err(err_string)? = Some(EditorSession {
-        capture_id: id,
-        stack: UndoStack::new(document),
-        image_path: record.original_path,
-        dirty: false,
-    });
+    let title = capture_title(&record);
+    {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        editors.entry(id.clone()).or_insert_with(|| EditorSession {
+            capture_id: id.clone(),
+            stack: UndoStack::new(document),
+            image_path: record.original_path,
+            dirty: false,
+            pixels_past: Vec::new(),
+            pixels_future: Vec::new(),
+        });
+    }
     // Close the wheel first, then open the editor on a later turn. Creating
     // the editor window inside the wheel's click aborts WebKit and leaves
     // the wheel on screen.
@@ -335,100 +347,216 @@ pub fn editor_open(app: AppHandle, state: State<AppState>, id: String) -> Result
         dismiss_donut(&queued);
         let open = queued.clone();
         let _ = queued.run_on_main_thread(move || {
-            let _ = crate::windows::open_editor(&open);
+            let _ = crate::windows::open_editor(&open, &id, &title);
         });
     })
     .map_err(err_string)
 }
 
-#[tauri::command]
-pub fn editor_state(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let editor = state.editor.lock().map_err(err_string)?;
-    let Some(session) = editor.as_ref() else {
-        return Err("No capture is open.".into());
+fn capture_title(record: &CaptureRecord) -> String {
+    record
+        .window_title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .or_else(|| record.source_app.clone().filter(|title| !title.trim().is_empty()))
+        .unwrap_or_else(|| "Capture".into())
+}
+
+fn editor_key(window: &WebviewWindow) -> Result<String, String> {
+    window
+        .label()
+        .strip_prefix("editor-")
+        .map(|id| id.to_string())
+        .ok_or_else(|| "This window is not an editor.".into())
+}
+
+fn push_pixels(session: &mut EditorSession, pixels: Option<Vec<u8>>) {
+    session.pixels_past.push(pixels);
+    if session.pixels_past.len() > 100 {
+        session.pixels_past.remove(0);
+    }
+    session.pixels_future.clear();
+}
+
+fn swap_pixels(session: &mut EditorSession, undo: bool) -> Result<(), String> {
+    let entry = if undo { session.pixels_past.pop() } else { session.pixels_future.pop() };
+    let Some(entry) = entry else {
+        return Ok(());
     };
-    Ok(serde_json::json!({
+    if let Some(bytes) = entry {
+        let current = std::fs::read(&session.image_path).map_err(err_string)?;
+        if undo {
+            session.pixels_future.push(Some(current));
+        } else {
+            session.pixels_past.push(Some(current));
+            if session.pixels_past.len() > 100 {
+                session.pixels_past.remove(0);
+            }
+        }
+        write_atomic(std::path::Path::new(&session.image_path), &bytes).map_err(err_string)?;
+    } else if undo {
+        session.pixels_future.push(None);
+    } else {
+        session.pixels_past.push(None);
+    }
+    Ok(())
+}
+
+fn session_json(session: &EditorSession) -> serde_json::Value {
+    serde_json::json!({
         "captureId": session.capture_id,
         "document": session.stack.current(),
         "imagePath": session.image_path,
         "canUndo": session.stack.can_undo(),
         "canRedo": session.stack.can_redo(),
         "dirty": session.dirty,
-    }))
+    })
 }
 
 #[tauri::command]
-pub fn editor_commit(state: State<AppState>, document: Document) -> Result<serde_json::Value, String> {
-    let mut editor = state.editor.lock().map_err(err_string)?;
-    let Some(session) = editor.as_mut() else {
-        return Err("No capture is open.".into());
-    };
-    session.stack.commit(document);
-    session.dirty = true;
-    Ok(serde_json::json!({
-        "document": session.stack.current(),
-        "canUndo": session.stack.can_undo(),
-        "canRedo": session.stack.can_redo(),
-    }))
+pub fn editor_image(window: WebviewWindow, state: State<AppState>) -> Result<String, String> {
+    let id = editor_key(&window)?;
+    let editors = state.editors.lock().map_err(err_string)?;
+    let session = editors.get(&id).ok_or_else(|| "No capture is open.".to_string())?;
+    let bytes = std::fs::read(&session.image_path).map_err(err_string)?;
+    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes))
 }
 
 #[tauri::command]
-pub fn editor_undo(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let mut editor = state.editor.lock().map_err(err_string)?;
-    let Some(session) = editor.as_mut() else {
-        return Err("No capture is open.".into());
-    };
-    session.stack.undo();
-    session.dirty = true;
-    Ok(serde_json::json!({
-        "document": session.stack.current(),
-        "canUndo": session.stack.can_undo(),
-        "canRedo": session.stack.can_redo(),
-    }))
+pub fn editor_state(window: WebviewWindow, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let id = editor_key(&window)?;
+    let editors = state.editors.lock().map_err(err_string)?;
+    let session = editors.get(&id).ok_or_else(|| "No capture is open.".to_string())?;
+    Ok(session_json(session))
 }
 
 #[tauri::command]
-pub fn editor_redo(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let mut editor = state.editor.lock().map_err(err_string)?;
-    let Some(session) = editor.as_mut() else {
-        return Err("No capture is open.".into());
+pub fn editor_commit(window: WebviewWindow, app: AppHandle, state: State<AppState>, document: Document) -> Result<serde_json::Value, String> {
+    let id = editor_key(&window)?;
+    let (capture_id, image_path, response) = {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get_mut(&id) else {
+            return Err("No capture is open.".into());
+        };
+        let changed = session.stack.current() != &document;
+        session.stack.commit(document);
+        session.dirty = true;
+        if changed {
+            push_pixels(session, None);
+        }
+        (
+            session.capture_id.clone(),
+            session.image_path.clone(),
+            serde_json::json!({
+                "document": session.stack.current(),
+                "canUndo": session.stack.can_undo(),
+                "canRedo": session.stack.can_redo(),
+            }),
+        )
     };
-    session.stack.redo();
-    session.dirty = true;
-    Ok(serde_json::json!({
-        "document": session.stack.current(),
-        "canUndo": session.stack.can_undo(),
-        "canRedo": session.stack.can_redo(),
-    }))
+    publish_edits(&app, &state, &capture_id, &image_path)?;
+    Ok(response)
 }
 
 #[tauri::command]
-pub fn editor_crop(state: State<AppState>, x: u32, y: u32, width: u32, height: u32) -> Result<serde_json::Value, String> {
-    let mut editor = state.editor.lock().map_err(err_string)?;
-    let Some(session) = editor.as_mut() else {
+pub fn editor_undo(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let id = editor_key(&window)?;
+    let (capture_id, image_path, response) = {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get_mut(&id) else {
+            return Err("No capture is open.".into());
+        };
+        if !session.stack.can_undo() {
+            return Ok(session_json(session));
+        }
+        session.stack.undo();
+        swap_pixels(session, true)?;
+        session.dirty = true;
+        (
+            session.capture_id.clone(),
+            session.image_path.clone(),
+            serde_json::json!({
+                "document": session.stack.current(),
+                "canUndo": session.stack.can_undo(),
+                "canRedo": session.stack.can_redo(),
+            }),
+        )
+    };
+    publish_edits(&app, &state, &capture_id, &image_path)?;
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn editor_redo(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let id = editor_key(&window)?;
+    let (capture_id, image_path, response) = {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get_mut(&id) else {
+            return Err("No capture is open.".into());
+        };
+        if !session.stack.can_redo() {
+            return Ok(session_json(session));
+        }
+        session.stack.redo();
+        swap_pixels(session, false)?;
+        session.dirty = true;
+        (
+            session.capture_id.clone(),
+            session.image_path.clone(),
+            serde_json::json!({
+                "document": session.stack.current(),
+                "canUndo": session.stack.can_undo(),
+                "canRedo": session.stack.can_redo(),
+            }),
+        )
+    };
+    publish_edits(&app, &state, &capture_id, &image_path)?;
+    Ok(response)
+}
+
+#[tauri::command]
+pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>, x: i32, y: i32, width: i32, height: i32) -> Result<serde_json::Value, String> {
+    let id = editor_key(&window)?;
+    let mut editors = state.editors.lock().map_err(err_string)?;
+    let Some(session) = editors.get_mut(&id) else {
         return Err("No capture is open.".into());
     };
-    let image = image::open(&session.image_path).map_err(err_string)?.to_rgba8();
-    let cropped = shotsmith_capture::crop(&image, PixelRect { x: x as i32, y: y as i32, width, height });
+    let before = std::fs::read(&session.image_path).map_err(err_string)?;
+    let image = image::load_from_memory(&before).map_err(err_string)?.to_rgba8();
+    let iw = image.width() as i32;
+    let ih = image.height() as i32;
+    if iw < 2 || ih < 2 || width < 2 || height < 2 {
+        return Err("Crop is too small.".into());
+    }
+    let x = x.clamp(0, iw - 1);
+    let y = y.clamp(0, ih - 1);
+    let width = width.min(iw - x).max(1) as u32;
+    let height = height.min(ih - y).max(1) as u32;
+    if x == 0 && y == 0 && width == image.width() && height == image.height() {
+        return Ok(session_json(session));
+    }
+    let cropped = shotsmith_capture::crop(&image, PixelRect { x, y, width, height });
     let png = shotsmith_output::encode(&cropped, ImageFormat::Png, 1.0).map_err(err_string)?;
     write_atomic(std::path::Path::new(&session.image_path), &png).map_err(err_string)?;
     let mut document = session.stack.current().clone();
     shotsmith_core::crop_document(&mut document, x as f32, y as f32, cropped.width() as f32, cropped.height() as f32);
     session.stack.commit(document);
+    push_pixels(session, Some(before));
     session.dirty = true;
-    Ok(serde_json::json!({
-        "document": session.stack.current(),
-        "imagePath": session.image_path,
-        "canUndo": session.stack.can_undo(),
-        "canRedo": session.stack.can_redo(),
-    }))
+    let capture_id = session.capture_id.clone();
+    let image_path = session.image_path.clone();
+    let response = session_json(session);
+    drop(editors);
+    publish_edits(&app, &state, &capture_id, &image_path)?;
+    Ok(response)
 }
 
 #[tauri::command]
-pub fn editor_copy(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+pub fn editor_copy(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let id = editor_key(&window)?;
     let image = {
-        let editor = state.editor.lock().map_err(err_string)?;
-        let Some(session) = editor.as_ref() else {
+        let editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get(&id) else {
             return Err("No capture is open.".into());
         };
         flattened(session)?
@@ -442,10 +570,11 @@ pub fn editor_copy(app: AppHandle, state: State<AppState>) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn editor_save(app: AppHandle, state: State<AppState>, preset_id: Option<String>, save_as: Option<String>) -> Result<String, String> {
+pub fn editor_save(window: WebviewWindow, app: AppHandle, state: State<AppState>, preset_id: Option<String>, save_as: Option<String>) -> Result<String, String> {
+    let id = editor_key(&window)?;
     let (capture_id, image, document, image_path) = {
-        let editor = state.editor.lock().map_err(err_string)?;
-        let Some(session) = editor.as_ref() else {
+        let editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get(&id) else {
             return Err("No capture is open.".into());
         };
         (
@@ -473,8 +602,8 @@ pub fn editor_save(app: AppHandle, state: State<AppState>, preset_id: Option<Str
         export_with_preset(&state, &image, &preset, scale, false)?
     };
     persist_document(&state, &capture_id, &document)?;
-    if let Ok(mut editor) = state.editor.lock() {
-        if let Some(session) = editor.as_mut() {
+    if let Ok(mut editors) = state.editors.lock() {
+        if let Some(session) = editors.get_mut(&capture_id) {
             session.dirty = false;
         }
     }
@@ -495,8 +624,9 @@ pub fn editor_save(app: AppHandle, state: State<AppState>, preset_id: Option<Str
 }
 
 #[tauri::command]
-pub fn editor_dirty(state: State<AppState>) -> Result<bool, String> {
-    Ok(state.editor.lock().map_err(err_string)?.as_ref().map(|s| s.dirty).unwrap_or(false))
+pub fn editor_dirty(window: WebviewWindow, state: State<AppState>) -> Result<bool, String> {
+    let id = editor_key(&window)?;
+    Ok(state.editors.lock().map_err(err_string)?.get(&id).map(|session| session.dirty).unwrap_or(false))
 }
 
 #[tauri::command]
@@ -577,7 +707,13 @@ pub fn history_copy(app: AppHandle, state: State<AppState>, id: String) -> Resul
         return Err("That capture is no longer in History.".into());
     };
     let image = image::open(&record.original_path).map_err(err_string)?.to_rgba8();
-    let path = record.original_path.clone();
+    let image = with_annotations(&record, &image);
+    let preview = preview_file(&record.original_path);
+    let path = if preview.exists() {
+        preview.to_string_lossy().to_string()
+    } else {
+        record.original_path.clone()
+    };
     let capture_id = id.clone();
     let app_for_ui = app.clone();
     app.run_on_main_thread(move || {
@@ -671,10 +807,10 @@ pub fn edit_clipboard(app: AppHandle, state: State<AppState>) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    // The blocking picker runs the panel on the main thread and waits there,
-    // which aborts the settings webview. Parent the panel and wait off that thread.
+    // This command is invoked on the main thread. Waiting here blocks the
+    // panel's own event loop, so the wait has to happen on another thread.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut builder = app.dialog().file().set_title("Save location");
     if let Some(window) = app.get_webview_window("settings") {
@@ -683,7 +819,7 @@ pub fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     builder.pick_folder(move |path| {
         let _ = tx.send(path);
     });
-    let Some(path) = rx.recv().map_err(err_string)? else {
+    let Some(path) = wait_for_dialog(rx).await? else {
         return Ok(None);
     };
     let path = path.into_path().map_err(|err| err.to_string())?;
@@ -691,10 +827,8 @@ pub fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub fn pick_save(app: AppHandle, suggested: String) -> Result<Option<String>, String> {
+pub async fn pick_save(app: AppHandle, suggested: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    // Parent the sheet to the editor. The blocking helper runs the panel on
-    // the main thread and then waits there, which freezes the webview.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut builder = app.dialog().file().set_title("Save capture").set_file_name(&suggested);
     if let Some(window) = app.get_webview_window("editor") {
@@ -703,11 +837,18 @@ pub fn pick_save(app: AppHandle, suggested: String) -> Result<Option<String>, St
     builder.save_file(move |path| {
         let _ = tx.send(path);
     });
-    let Some(path) = rx.recv().map_err(err_string)? else {
+    let Some(path) = wait_for_dialog(rx).await? else {
         return Ok(None);
     };
     let path = path.into_path().map_err(|err| err.to_string())?;
     Ok(Some(path.to_string_lossy().to_string()))
+}
+
+async fn wait_for_dialog<T: Send + 'static>(rx: std::sync::mpsc::Receiver<T>) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(err_string)
 }
 
 #[tauri::command]
@@ -769,8 +910,19 @@ fn begin_overlay(app: &AppHandle, state: &State<AppState>, present: bool) -> Res
         return Err(format!("Screen capture is blocked. {reason}"));
     }
     // Hide the previous overlay before the snapshot, or the next capture is a
-    // picture of the overlay itself.
+    // picture of the overlay itself. The status menu has the same problem if
+    // its hide has not reached the screen yet.
+    let menu_open = app
+        .get_webview_window("status-menu")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if menu_open {
+        hide_on_main(app, "status-menu")?;
+    }
     hide_on_main(app, "overlay-")?;
+    if menu_open && !on_main_thread() {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
     let frozen = shotsmith_platform::freeze_all().map_err(err_string)?;
     let mut payloads = Vec::new();
     let dir = state.root.join("freeze");
@@ -887,6 +1039,8 @@ fn store_and_route(
         original_path: original_path.to_string_lossy().to_string(),
         document_path: Some(document_path.to_string_lossy().to_string()),
         pinned: false,
+        preview_path: None,
+        preview_rev: 0,
     };
     {
         let history = state.history.lock().map_err(err_string)?;
@@ -1124,6 +1278,43 @@ fn flattened(session: &EditorSession) -> Result<RgbaImage, String> {
     let mut document = session.stack.current().clone();
     shotsmith_extensions::install_builtin().before_export(&mut document);
     Ok(shotsmith_render::render(&image, &document, &[]))
+}
+
+fn publish_edits(app: &AppHandle, state: &State<AppState>, id: &str, image_path: &str) -> Result<(), String> {
+    let document = {
+        let editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get(id) else {
+            return Ok(());
+        };
+        session.stack.current().clone()
+    };
+    persist_document(state, id, &document)?;
+    let image = image::open(image_path).map_err(err_string)?.to_rgba8();
+    let mut flat = document;
+    shotsmith_extensions::install_builtin().before_export(&mut flat);
+    let rendered = shotsmith_render::render(&image, &flat, &[]);
+    let png = shotsmith_output::encode(&rendered, ImageFormat::Png, 1.0).map_err(err_string)?;
+    write_atomic(&preview_file(image_path), &png).map_err(err_string)?;
+    let _ = app.emit("history-changed", ());
+    Ok(())
+}
+
+fn preview_file(original: &str) -> PathBuf {
+    PathBuf::from(original).with_file_name("preview.png")
+}
+
+fn attach_preview(record: &mut CaptureRecord) {
+    let path = preview_file(&record.original_path);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return;
+    };
+    record.preview_path = Some(path.to_string_lossy().to_string());
+    record.preview_rev = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(1);
 }
 
 fn persist_document(state: &State<AppState>, id: &str, document: &Document) -> Result<(), String> {

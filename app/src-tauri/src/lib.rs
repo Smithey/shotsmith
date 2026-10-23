@@ -3,6 +3,7 @@ mod state;
 mod windows;
 
 use state::{app_root, load_presets, load_settings, AppState};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
 use tauri::{
@@ -25,14 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         .enable_macos_default_menu(false)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            for label in ["onboarding", "settings", "editor", "history"] {
-                if let Some(window) = app.get_webview_window(label) {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                    return;
-                }
-            }
+            windows::reveal_documents(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -57,7 +51,7 @@ pub fn run() {
             frozen: Mutex::new(None),
             displays: Mutex::new(Vec::new()),
             last_region: Mutex::new(None),
-            editor: Mutex::new(None),
+            editors: Mutex::new(HashMap::new()),
             donut: Mutex::new(None),
             hud: Mutex::new(None),
             capture_mode: Mutex::new("region".into()),
@@ -77,8 +71,7 @@ pub fn run() {
             if onboarding || needs_permissions {
                 let _ = windows::open_view(app.handle(), "onboarding", "onboarding", "Welcome to Shotsmith", 180.0, 80.0, 520.0, 680.0, true, false);
             }
-            #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            windows::sync_dock(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -106,6 +99,7 @@ pub fn run() {
             commands::history_delete,
             commands::history_copy,
             commands::editor_open,
+            commands::editor_image,
             commands::editor_state,
             commands::editor_commit,
             commands::editor_undo,
@@ -138,11 +132,15 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Shotsmith")
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                if code.is_none() {
-                    api.prevent_exit();
+        .run(|app, event| {
+            match event {
+                tauri::RunEvent::ExitRequested { api, code, .. } => {
+                    if code.is_none() {
+                        api.prevent_exit();
+                    }
                 }
+                tauri::RunEvent::Reopen { .. } => windows::reveal_documents(app),
+                _ => {}
             }
         });
 }
@@ -260,6 +258,9 @@ fn build_menu_bar(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let settings_item = action(app, "settings", "Settings…", Some("Cmd+,"))?;
     let capture = Submenu::with_id(app, "capture-menu", "Capture", true)?;
     append_capture(&capture, app, false)?;
+    let window_menu = Submenu::with_id(app, "window-menu", "Window", true)?;
+    #[cfg(target_os = "macos")]
+    window_menu.set_as_windows_menu_for_nsapp()?;
     let app_menu = Submenu::with_items(
         app,
         "Shotsmith",
@@ -275,7 +276,7 @@ fn build_menu_bar(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &PredefinedMenuItem::quit(app, Some("Quit Shotsmith"))?,
         ],
     )?;
-    Menu::with_items(app, &[&app_menu, &capture])
+    Menu::with_items(app, &[&app_menu, &capture, &window_menu])
 }
 
 fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_commands: bool) -> tauri::Result<()> {
@@ -290,12 +291,12 @@ fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_co
     let repeat = action(app, "capture-repeat", "Repeat last region", some_accel(&repeat_accel))?;
     let window = action(app, "capture-window", "Window", some_accel(&window_accel))?;
     let screen = action(app, "capture-screen", "Full screen", some_accel(&screen_accel))?;
-    let scrolling = action(app, "capture-scroll", "Scrolling…", Some("Alt+Cmd+Shift+S"))?;
+    let scrolling = later(app, "capture-scroll", "Scrolling…")?;
     let timed_3 = action(app, "timed-3", "3 seconds", None)?;
     let timed_5 = action(app, "timed-5", "5 seconds", None)?;
     let timed_10 = action(app, "timed-10", "10 seconds", None)?;
     let timed = Submenu::with_items(app, "Timed", true, &[&timed_3, &timed_5, &timed_10])?;
-    let copy_text = action(app, "capture-text", "Copy text from screen", Some("Alt+Cmd+Shift+O"))?;
+    let copy_text = later(app, "capture-text", "Copy text from screen")?;
     let sep_recent = PredefinedMenuItem::separator(app)?;
     let history = action(app, "history", "Show History", some_accel(&history_accel))?;
     let sep_file = PredefinedMenuItem::separator(app)?;
@@ -346,6 +347,10 @@ fn action(app: &tauri::AppHandle, id: &str, label: &str, accelerator: Option<&st
     MenuItem::with_id(app, id, label, true, accelerator)
 }
 
+fn later(app: &tauri::AppHandle, id: &str, label: &str) -> tauri::Result<MenuItem<tauri::Wry>> {
+    MenuItem::with_id(app, id, format!("{label}    Coming soon"), false, None::<&str>)
+}
+
 fn some_accel(value: &str) -> Option<&str> {
     if value.is_empty() { None } else { Some(value) }
 }
@@ -371,6 +376,26 @@ fn pinned_menu(app: &tauri::AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
 }
 
 fn on_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    // The menu item runs before AppKit dismisses the menu. Capturing now
+    // freezes the open menu into the picture. Let it close first.
+    let delayed = matches!(id, "capture-region" | "capture-window" | "capture-screen" | "capture-repeat")
+        || id.starts_with("timed-");
+    if delayed {
+        let app = app.clone();
+        let id = id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(220));
+            let queued = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let _ = run_menu(&queued, &id);
+            });
+        });
+        return Ok(());
+    }
+    run_menu(app, id)
+}
+
+fn run_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
     match id {
         "capture-region" => commands::capture_begin(app.clone(), state, "region".into())?,

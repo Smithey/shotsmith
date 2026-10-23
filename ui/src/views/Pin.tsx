@@ -1,12 +1,16 @@
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { useEffect, useState } from "react";
-import { api, assetUrl, currentWindow, queryId, type HistoryItem } from "../api";
+import { api, currentWindow, onHistoryChanged, queryId, shotUrl, type HistoryItem } from "../api";
 
 export function Pin() {
   const id = queryId() || window.location.search.split("id=")[1] || "";
   const [item, setItem] = useState<HistoryItem | null>(null);
   useEffect(() => {
-    api.history("").then((rows) => setItem(rows.find((row) => row.id === id) ?? null));
+    const load = () => api.history("").then((rows) => setItem(rows.find((row) => row.id === id) ?? null));
+    load();
+    let stop = () => {};
+    onHistoryChanged(load).then((un) => { stop = un; });
+    return () => stop();
   }, [id]);
   useEffect(() => {
     const onWheel = (event: WheelEvent) => {
@@ -23,7 +27,7 @@ export function Pin() {
   if (!item) return null;
   return (
     <div className="pin" data-tauri-drag-region onDoubleClick={() => api.openEditor(item.id)}>
-      <img src={assetUrl(item.originalPath)} alt="" />
+      <img key={item.previewRev ?? 0} src={shotUrl(item)} alt="" />
       <div className="bar">
         <button onClick={() => api.openEditor(item.id)}>Annotate</button>
         <button onClick={() => api.closePin(item.id)}>Close</button>

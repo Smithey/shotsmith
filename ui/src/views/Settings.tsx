@@ -262,13 +262,13 @@ function Presets({ settings, presets, preset, preview, saveSettings, savePreset,
           );
         })}
         <div className="preset-tools">
-          <button type="button" aria-label="Add preset" onClick={() => {
+          <button type="button" data-tip="Add preset" aria-label="Add preset" onClick={() => {
             const next: Preset = { ...preset, id: uid(), name: "New preset", builtin: false, donutSlot: null, shortcut: null };
             api.savePreset(next).then((list) => { setPresets(list); setSelected(next.id); });
           }}>
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2.5v9M2.5 7h9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
           </button>
-          <button type="button" aria-label="Remove preset" disabled={preset.builtin} onClick={() => {
+          <button type="button" data-tip="Remove preset" aria-label="Remove preset" disabled={preset.builtin} onClick={() => {
             api.deletePreset(preset.id).then((list) => {
               setPresets(list);
               const fallback = list[0];
@@ -526,7 +526,7 @@ function ShortcutField({ value, taken, onChange, onError }: {
   return (
     <button
       type="button"
-      className={recording ? "keys on" : "keys"}
+      className={recording ? "key-edit on" : "key-edit"}
       onClick={() => { if (!recording) arm(); }}
       onBlur={() => { if (recordingRef.current) disarm(); }}
       onKeyDown={(event) => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { currentMonitor } from "@tauri-apps/api/window";
-import { api, assetUrl, currentWindow, onRefresh, type HistoryItem, type Settings } from "../api";
+import { api, currentWindow, onHistoryChanged, onRefresh, shotUrl, type HistoryItem, type Settings } from "../api";
 import { menuHint } from "../keys";
 
 export function StatusMenu() {
@@ -25,12 +25,15 @@ export function StatusMenu() {
     load();
     let stop = () => {};
     onRefresh(() => load()).then((un) => { stop = un; });
+    let stopHistory = () => {};
+    onHistoryChanged(() => load()).then((un) => { stopHistory = un; });
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") currentWindow().hide();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       stop();
+      stopHistory();
       window.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -67,6 +70,9 @@ export function StatusMenu() {
 
   async function run(action: () => Promise<unknown> | void) {
     await currentWindow().hide();
+    // Hide returns before the panel is gone from the screen. Wait, or the
+    // capture includes the menu.
+    await new Promise((resolve) => window.setTimeout(resolve, 140));
     await action();
   }
 
@@ -80,7 +86,7 @@ export function StatusMenu() {
         <Row id="repeat" hover={hover} setHover={setHover} label="Repeat last region" hint={menuHint(settings?.shortcuts.repeatLast)} onClick={() => run(() => api.repeat())} />
         <Row id="window" hover={hover} setHover={setHover} label="Window" hint={menuHint(settings?.shortcuts.window)} onClick={() => run(() => api.begin("window"))} />
         <Row id="screen" hover={hover} setHover={setHover} label="Full screen" hint={menuHint(settings?.shortcuts.fullScreen)} onClick={() => run(() => api.begin("screen"))} />
-        <Row id="scroll" hover={hover} setHover={setHover} label="Scrolling…" hint="⌥⌘⇧S" onClick={() => run(() => api.featureNotice("Scrolling capture is not in this version yet."))} />
+        <Row id="scroll" hover={hover} setHover={setHover} label="Scrolling…" hint="Coming soon" disabled />
         <div className={side === "left" ? "menu-sub flip" : "menu-sub"} onMouseEnter={() => { setHover("timed"); setPinsOpen(false); }}>
           <button type="button" className={hover === "timed" ? "menu-row on" : "menu-row"} onClick={() => run(() => api.countdown())}>
             <span>Timed · {seconds} s</span>
@@ -101,7 +107,7 @@ export function StatusMenu() {
             </div>
           )}
         </div>
-        <Row id="text" hover={hover} setHover={setHover} label="Copy text from screen" hint="⌥⌘⇧O" onClick={() => run(() => api.featureNotice("Copy text from the screen is not in this version yet."))} />
+        <Row id="text" hover={hover} setHover={setHover} label="Copy text from screen" hint="Coming soon" disabled />
         <div className="menu-rule" />
         <div className="recent-block" onMouseEnter={() => setHover("history")}>
           <div className="recent-head">
@@ -112,7 +118,7 @@ export function StatusMenu() {
             <div className="recent-grid">
               {recent.map((item) => (
                 <button key={item.id} type="button" className={hover === item.id ? "recent-item on" : "recent-item"} onMouseEnter={() => setHover(item.id)} onClick={() => run(() => api.openEditor(item.id))}>
-                  <span className="recent-card"><img src={assetUrl(item.originalPath)} alt="" /></span>
+                  <span className="recent-card"><img key={`${item.id}-${item.previewRev ?? 0}`} src={shotUrl(item)} alt="" /></span>
                   <span className="recent-cap">{caption(item)}</span>
                 </button>
               ))}
@@ -143,16 +149,17 @@ export function StatusMenu() {
   );
 }
 
-function Row({ id, hover, setHover, label, hint, onClick }: {
+function Row({ id, hover, setHover, label, hint, onClick, disabled = false }: {
   id: string;
   hover: string;
   setHover: (id: string) => void;
   label: string;
   hint: string;
-  onClick: () => void;
+  onClick?: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <button type="button" className={hover === id ? "menu-row on" : "menu-row"} onMouseEnter={() => setHover(id)} onClick={onClick}>
+    <button type="button" className={!disabled && hover === id ? "menu-row on" : "menu-row"} disabled={disabled} onMouseEnter={() => { if (!disabled) setHover(id); }} onClick={onClick}>
       <span>{label}</span>
       <span className="menu-key">{hint}</span>
     </button>

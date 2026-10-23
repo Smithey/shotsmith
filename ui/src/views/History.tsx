@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, assetUrl, onRefresh, type HistoryItem } from "../api";
+import { api, onHistoryChanged, onRefresh, shotUrl, type HistoryItem } from "../api";
 
 export function History() {
   const [items, setItems] = useState<HistoryItem[]>([]);
@@ -16,7 +16,12 @@ export function History() {
     load("");
     let stop = () => {};
     onRefresh(() => load()).then((un) => { stop = un; });
-    return () => stop();
+    let stopHistory = () => {};
+    onHistoryChanged(() => load()).then((un) => { stopHistory = un; });
+    return () => {
+      stop();
+      stopHistory();
+    };
   }, []);
 
   const apps = useMemo(() => {
@@ -65,7 +70,7 @@ export function History() {
               <article key={item.id} className="hist-card">
                 <div className="hist-shot">
                   <button type="button" className="hist-open" onClick={() => api.openEditor(item.id)}>
-                    <img src={assetUrl(item.originalPath)} alt="" />
+                    <img key={`${item.id}-${item.previewRev ?? 0}`} src={shotUrl(item)} alt="" />
                   </button>
                   <span className="hist-actions">
                     <button type="button" onClick={() => api.openEditor(item.id)}>Open</button>

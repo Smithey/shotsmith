@@ -28,7 +28,7 @@ pub fn crop_image(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> RgbaImag
 fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
     match object {
         AnnotationObject::Rect(o) => {
-            shadow_rect(pixmap, o.x, o.y, o.w, o.h, o.shadow);
+            shadow_rect(pixmap, o.x, o.y, o.w, o.h, o.radius, shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity));
             let mut paint = paint_hex(&o.fill, o.opacity);
             if o.fill != "none" {
                 fill_round(pixmap, o.x, o.y, o.w, o.h, o.radius, &paint);
@@ -37,7 +37,7 @@ fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
             stroke_round(pixmap, o.x, o.y, o.w, o.h, o.radius, o.stroke_width, &paint);
         }
         AnnotationObject::Ellipse(o) => {
-            shadow_rect(pixmap, o.x, o.y, o.w, o.h, o.shadow);
+            shadow_oval(pixmap, o.x, o.y, o.w, o.h, shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity));
             if o.fill != "none" {
                 let paint = paint_hex(&o.fill, o.opacity);
                 fill_oval(pixmap, o.x, o.y, o.w, o.h, &paint);
@@ -47,7 +47,18 @@ fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
         }
         AnnotationObject::Line(o) => {
             let paint = paint_hex(&o.stroke, 1.0);
-            stroke_line(pixmap, o.x1, o.y1, o.x2, o.y2, None, o.stroke_width, &paint, false);
+            stroke_line(
+                pixmap,
+                o.x1,
+                o.y1,
+                o.x2,
+                o.y2,
+                None,
+                o.stroke_width,
+                &paint,
+                shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity),
+                true,
+            );
         }
         AnnotationObject::Arrow(o) => {
             let paint = paint_hex(&o.stroke, 1.0);
@@ -55,29 +66,35 @@ fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
                 (Some(cx), Some(cy)) => Some((cx, cy)),
                 _ => None,
             };
-            stroke_line(
-                pixmap,
-                o.x1,
-                o.y1,
-                o.x2,
-                o.y2,
-                control,
-                o.stroke_width,
-                &paint,
-                o.shadow,
-            );
             let (hx, hy) = match control {
                 Some((cx, cy)) => (2.0 * o.x2 - 2.0 * cx + o.x1, 2.0 * o.y2 - 2.0 * cy + o.y1),
                 None => (o.x2 - o.x1, o.y2 - o.y1),
             };
-            if matches!(o.heads, ArrowHeads::End | ArrowHeads::Both) {
+            let inset = (o.stroke_width * 3.2).max(10.0) * 0.82;
+            let end = matches!(o.heads, ArrowHeads::End | ArrowHeads::Both);
+            let both = o.heads == ArrowHeads::Both;
+            let (x2, y2) = if end { pull_back(o.x2, o.y2, hx, hy, inset) } else { (o.x2, o.y2) };
+            let (tx, ty) = match control {
+                Some((cx, cy)) => (2.0 * o.x1 - 2.0 * cx + o.x2, 2.0 * o.y1 - 2.0 * cy + o.y2),
+                None => (o.x1 - o.x2, o.y1 - o.y2),
+            };
+            let (x1, y1) = if both { pull_back(o.x1, o.y1, tx, ty, inset) } else { (o.x1, o.y1) };
+            stroke_line(
+                pixmap,
+                x1,
+                y1,
+                x2,
+                y2,
+                control,
+                o.stroke_width,
+                &paint,
+                shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity),
+                false,
+            );
+            if end {
                 draw_head(pixmap, o.x2, o.y2, hx, hy, o.stroke_width, &paint);
             }
-            if o.heads == ArrowHeads::Both {
-                let (tx, ty) = match control {
-                    Some((cx, cy)) => (2.0 * o.x1 - 2.0 * cx + o.x2, 2.0 * o.y1 - 2.0 * cy + o.y2),
-                    None => (o.x1 - o.x2, o.y1 - o.y2),
-                };
+            if both {
                 draw_head(pixmap, o.x1, o.y1, tx, ty, o.stroke_width, &paint);
             }
         }
@@ -227,10 +244,13 @@ fn draw_obfuscate(pixmap: &mut Pixmap, o: &shotsmith_core::ObfuscateObject) {
 }
 
 fn draw_text(pixmap: &mut Pixmap, o: &shotsmith_core::TextObject) {
+    let lines: Vec<&str> = if o.text.is_empty() { vec![""] } else { o.text.split('\n').collect() };
+    let longest = lines.iter().map(|line| line.chars().count()).max().unwrap_or(1) as f32;
+    let width = (longest * o.size * 0.55).max(o.size);
+    let height = lines.len() as f32 * o.size * 1.2;
     if o.fill != "none" {
         let paint = paint_hex(if o.fill == "white" { "#FFFFFF" } else { &o.fill }, 1.0);
-        let width = (o.text.chars().count() as f32 * o.size * 0.55).max(o.size);
-        fill_round(pixmap, o.x - 4.0, o.y - o.size, width + 8.0, o.size + 8.0, 4.0, &paint);
+        fill_round(pixmap, o.x - 4.0, o.y - o.size, width + 8.0, height + 8.0, 4.0, &paint);
     }
     let font_bytes = font_bytes(o.bold);
     let Ok(font) = FontRef::try_from_slice(font_bytes) else {
@@ -238,22 +258,24 @@ fn draw_text(pixmap: &mut Pixmap, o: &shotsmith_core::TextObject) {
     };
     let scale = PxScale::from(o.size.max(8.0));
     let (r, g, b, a) = parse_hex(&o.color).unwrap_or((29, 29, 31, 255));
-    let mut caret = point(o.x, o.y);
-    for ch in o.text.chars() {
-        let glyph_id = font.glyph_id(ch);
-        let glyph = glyph_id.with_scale(scale);
-        if let Some(outlined) = font.outline_glyph(glyph) {
-            outlined.draw(|dx, dy, cov| {
-                let x = (caret.x + outlined.px_bounds().min.x + dx as f32).round() as i32;
-                let y = (caret.y + outlined.px_bounds().min.y + dy as f32).round() as i32;
-                if x < 0 || y < 0 || x >= pixmap.width() as i32 || y >= pixmap.height() as i32 {
-                    return;
-                }
-                blend_pixel(pixmap, x as u32, y as u32, r, g, b, (a as f32 * cov) as u8);
-            });
+    for (index, line) in lines.iter().enumerate() {
+        let mut caret = point(o.x, o.y + index as f32 * o.size * 1.2);
+        for ch in line.chars() {
+            let glyph_id = font.glyph_id(ch);
+            let glyph = glyph_id.with_scale(scale);
+            if let Some(outlined) = font.outline_glyph(glyph) {
+                outlined.draw(|dx, dy, cov| {
+                    let x = (caret.x + outlined.px_bounds().min.x + dx as f32).round() as i32;
+                    let y = (caret.y + outlined.px_bounds().min.y + dy as f32).round() as i32;
+                    if x < 0 || y < 0 || x >= pixmap.width() as i32 || y >= pixmap.height() as i32 {
+                        return;
+                    }
+                    blend_pixel(pixmap, x as u32, y as u32, r, g, b, (a as f32 * cov) as u8);
+                });
+            }
+            let units = font.units_per_em().unwrap_or(1000.0);
+            caret.x += font.h_advance_unscaled(glyph_id) as f32 * scale.x / units;
         }
-        let units = font.units_per_em().unwrap_or(1000.0);
-        caret.x += font.h_advance_unscaled(glyph_id) as f32 * scale.x / units;
     }
 }
 
@@ -477,24 +499,12 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, r: u8, g: u8, b: u8, a: u8) 
 }
 
 fn font_bytes(bold: bool) -> &'static [u8] {
+    // DejaVu is vendored so a Windows or Linux runner can compile without a system font.
+    // License: crates/render/fonts/LICENSE
     if bold {
-        #[cfg(target_os = "macos")]
-        {
-            include_bytes!("/System/Library/Fonts/Supplemental/Arial Bold.ttf")
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            include_bytes!("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-        }
+        include_bytes!("../fonts/DejaVuSans-Bold.ttf")
     } else {
-        #[cfg(target_os = "macos")]
-        {
-            include_bytes!("/System/Library/Fonts/Supplemental/Arial.ttf")
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            include_bytes!("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-        }
+        include_bytes!("../fonts/DejaVuSans.ttf")
     }
 }
 
@@ -606,12 +616,9 @@ fn stroke_line(
     control: Option<(f32, f32)>,
     width: f32,
     paint: &Paint,
-    shadow: bool,
+    shadow: Option<Shade>,
+    round_cap: bool,
 ) {
-    if shadow {
-        let shadow_paint = paint_hex("#00000055", 1.0);
-        stroke_line(pixmap, x1 + 2.0, y1 + 2.0, x2 + 2.0, y2 + 2.0, control.map(|(x, y)| (x + 2.0, y + 2.0)), width, &shadow_paint, false);
-    }
     let mut pb = PathBuilder::new();
     pb.move_to(x1, y1);
     if let Some((cx, cy)) = control {
@@ -619,12 +626,20 @@ fn stroke_line(
     } else {
         pb.line_to(x2, y2);
     }
-    if let Some(path) = pb.finish() {
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    if let Some(shade) = shadow {
+        let shadow_paint = paint_hex("#000000", shade.opacity);
         let mut stroke = Stroke::default();
-        stroke.width = width.max(1.0);
+        stroke.width = width.max(1.0) + shade.blur.max(0.0) * 0.55;
         stroke.line_cap = LineCap::Round;
-        pixmap.stroke_path(&path, paint, &stroke, Transform::identity(), None);
+        pixmap.stroke_path(&path, &shadow_paint, &stroke, Transform::from_translate(shade.x, shade.y), None);
     }
+    let mut stroke = Stroke::default();
+    stroke.width = width.max(1.0);
+    stroke.line_cap = if round_cap { LineCap::Round } else { LineCap::Butt };
+    pixmap.stroke_path(&path, paint, &stroke, Transform::identity(), None);
 }
 
 fn draw_head(pixmap: &mut Pixmap, x: f32, y: f32, dx: f32, dy: f32, width: f32, paint: &Paint) {
@@ -646,12 +661,61 @@ fn draw_head(pixmap: &mut Pixmap, x: f32, y: f32, dx: f32, dy: f32, width: f32, 
     }
 }
 
-fn shadow_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, on: bool) {
-    if !on {
-        return;
+struct Shade {
+    blur: f32,
+    x: f32,
+    y: f32,
+    opacity: f32,
+}
+
+fn shade(on: bool, blur: f32, x: f32, y: f32, opacity: f32) -> Option<Shade> {
+    if on && opacity > 0.0 {
+        Some(Shade { blur, x, y, opacity })
+    } else {
+        None
     }
-    let paint = paint_hex("#00000044", 1.0);
-    fill_round(pixmap, x + 3.0, y + 4.0, w, h, 4.0, &paint);
+}
+
+fn pull_back(x: f32, y: f32, dx: f32, dy: f32, inset: f32) -> (f32, f32) {
+    let len = (dx * dx + dy * dy).sqrt().max(0.001);
+    let cut = inset.min(len * 0.45);
+    (x - dx / len * cut, y - dy / len * cut)
+}
+
+fn shadow_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f32, shade: Option<Shade>) {
+    let Some(shade) = shade else {
+        return;
+    };
+    let layers = 4;
+    for i in 0..layers {
+        let t = (i + 1) as f32 / layers as f32;
+        let spread = shade.blur.max(0.0) * t * 0.35;
+        let alpha = shade.opacity * (1.0 - t * 0.65) / layers as f32;
+        let paint = paint_hex("#000000", alpha);
+        fill_round(
+            pixmap,
+            x + shade.x - spread,
+            y + shade.y - spread * 0.35,
+            w + spread * 2.0,
+            h + spread * 2.0,
+            radius + spread,
+            &paint,
+        );
+    }
+}
+
+fn shadow_oval(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, shade: Option<Shade>) {
+    let Some(shade) = shade else {
+        return;
+    };
+    let layers = 4;
+    for i in 0..layers {
+        let t = (i + 1) as f32 / layers as f32;
+        let spread = shade.blur.max(0.0) * t * 0.35;
+        let alpha = shade.opacity * (1.0 - t * 0.65) / layers as f32;
+        let paint = paint_hex("#000000", alpha);
+        fill_oval(pixmap, x + shade.x - spread, y + shade.y - spread * 0.35, w + spread * 2.0, h + spread * 2.0, &paint);
+    }
 }
 
 fn image_to_pixmap(image: &RgbaImage) -> Pixmap {
