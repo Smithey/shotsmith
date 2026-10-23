@@ -28,7 +28,7 @@ Yes, I did vibe code this, and I am by no means a software engineer. If you thin
 
 I built this for my own use because I really loved Greenshot in my Windows days. I am not a fan of the Mac app, and the built-in Mac screenshot tool was annoying to use. My uncle asked for a free Snagit alternative.
 
-I did get inspiration for the action wheel from [Tangerine](https://github.com/Tangerine-Community/Tangerine). I am sure their designers think I butchered the look, but props to them for the awesome app.
+I did get inspiration for the action wheel from [Filee](https://github.com/KnifeLemon/Filee). I am sure their designers think I butchered the look, but props to them for the awesome app.
 
 I benefit from open source software, directly and indirectly, every day, so I wanted to do the same. It was a tough decision to go with open-core, but I was satisfied because everything I would have wanted, plus more, is free forever. The paid version, which is dirt cheap, is basically like 2% of obscure features that really are more for people who want to go out of their way to support me to keep improving this. I am just happy if one other person benefits from it.
 
