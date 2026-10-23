@@ -477,10 +477,12 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, r: u8, g: u8, b: u8, a: u8) 
 }
 
 fn font_bytes(bold: bool) -> &'static [u8] {
+    // DejaVu is vendored so a Windows or Linux runner can compile without a system font.
+    // License: crates/render/fonts/LICENSE
     if bold {
-        include_bytes!("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        include_bytes!("../fonts/DejaVuSans-Bold.ttf")
     } else {
-        include_bytes!("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+        include_bytes!("../fonts/DejaVuSans.ttf")
     }
 }
 
