@@ -1,18 +1,18 @@
 use shotsmith_core::Document;
 
-/// Editor hooks. Pro implements redaction, style kits, and extra objects later.
+/// Editor hooks. The free app ships no built-in editors.
 pub trait EditorCore: Send + Sync {
     fn id(&self) -> &'static str;
     fn before_export(&self, _document: &mut Document) {}
 }
 
-/// Capture hooks. Pro implements element snapping and step guides later.
+/// Capture hooks. The free app ships no built-in capture hooks.
 pub trait CaptureKit: Send + Sync {
     fn id(&self) -> &'static str;
     fn after_capture(&self, _capture_id: &str) {}
 }
 
-/// History hooks. Pro implements meaning search and sync later.
+/// History hooks. The free app ships no built-in history providers.
 pub trait HistoryProvider: Send + Sync {
     fn id(&self) -> &'static str;
 }
@@ -31,7 +31,7 @@ impl Host {
     }
 }
 
-/// The free app installs nothing. Official builds patch this crate.
+/// The free app installs nothing.
 pub fn install_builtin() -> Host {
     Host {
         editors: Vec::new(),

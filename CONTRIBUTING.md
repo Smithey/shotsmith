@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports, translations, docs, and code are welcome. This repository is the free Shotsmith app under the MIT licence.
+Bug reports, translations, docs, and code are welcome. Anyone can open a pull request. `main` accepts changes through a pull request, and it needs a review from [@Smithey](https://github.com/Smithey) before it merges. This repository is the free Shotsmith app under the MIT licence.
 
 Commits need a [Developer Certificate of Origin](https://developercertificate.org/) sign-off:
 

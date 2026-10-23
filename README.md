@@ -1,67 +1,89 @@
 <div align="center">
 
-<img src="docs/assets/icon.png" width="96" height="96" alt="Shotsmith logo: an anvil with a dashed selection frame">
+<img src="docs/assets/icon.png" width="96" height="96" alt="Shotsmith logo: a white anvil under an orange selection frame">
 
 # Shotsmith
 
-**Screenshots, forged in two keystrokes.**
-The free, open-source screenshot and annotation tool for **Mac and Windows**.
+A free, open-source screenshot tool for the Mac menu bar.
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-black)](LICENSE)
-![Platforms](https://img.shields.io/badge/platforms-macOS%2014%2B%20%7C%20Windows%2011-black)
-![Built with](https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-black)
-[![Free forever](https://img.shields.io/badge/free-forever-FF9F0A)](#free-forever)
+![Status](https://img.shields.io/badge/status-v0.1%20macOS%20%2B%20Windows-black)
+![Pro](https://img.shields.io/badge/Pro-coming%20soon-FF9F0A)
 
-[Download](https://github.com/Smithey/shotsmith/releases) · [Website](https://shotsmith.app) · [Docs](docs/) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md)
+[Releases](https://github.com/Smithey/shotsmith/releases) · [Website](https://shotsmith.app) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
-<img src="docs/assets/hero.png" width="860" alt="Shotsmith editor with an annotated screenshot and the donut quick-action menu">
+<img src="docs/assets/editor.png" width="860" alt="The Shotsmith editor: a capture, an arrow, and the colour and weight controls">
 
 </div>
 
----
+Shotsmith 0.1 is a menu bar app for macOS 14 and newer. Press the shortcut, drag a region, and the capture is on the clipboard and in History. You can annotate it, save a PNG, or pin it above your other windows.
 
-## Why Shotsmith?
+This repository is the whole free app, under the MIT licence. Nothing in it is a trial, and nothing here will be moved behind a paywall.
 
-- **Free forever.** Every core feature, no trial, no watermark, no account.
-- **Private by default.** No telemetry, no network calls, works fully offline.
-- **Fast.** Hotkey → capture → copied in two keystrokes, using the donut.
-- **Same app everywhere.** One design on Mac and Windows; your presets and `.shotsmith` files move between them.
-- **Open source.** MIT-licensed. Read it, build it, fork it.
+Releases also include a Windows 11 64-bit installer. That build is not Authenticode signed yet, so Windows SmartScreen may warn until you confirm the checksum below.
 
-## Features
+## A note from me
 
-| | |
-|---|---|
-| **Capture** | Region with pixel loupe, window, full screen, repeat last region, timed, scrolling |
-| **The donut** | Radial quick-action menu at your cursor: copy, save, annotate, pin, share, copy text, presets |
-| **Editor** | Arrow, rectangle, ellipse, line, freehand, text, callout, step counter, highlight, magnify, crop, one key each |
-| **Redaction** | Pixelate, blur or block; secret detection finds emails, phone numbers, card numbers and API keys |
-| **Beautify** | Backdrops, padding, frames, shadows and size presets |
-| **Measure** | Rulers, element sizes, spacing, colour picker |
-| **Live text** | Select and copy text from any capture; copy code as code |
-| **Presets** | Format, scale, folder, file-name pattern, effects, bound to the donut or a shortcut |
-| **History & pins** | Searchable history; float captures above your work |
-| **Automation** | `shotsmith` CLI, `shotsmith://` URL scheme, watch folders; Apple Shortcuts on Mac |
+Yes, I did vibe code this, and I am by no means a software engineer. If you think you can do it better, then go ahead. I am not stopping you. If you want to contribute, feel free, but unless you understand the output and test it, don't be a meat proxy ([dontbeameatproxy.com](https://dontbeameatproxy.com)).
 
-## Install
+I built this for my own use because I really loved Greenshot in my Windows days. I am not a fan of the Mac app, and the built-in Mac screenshot tool was annoying to use. My uncle asked for a free Snagit alternative.
 
-**macOS 14+** (Apple silicon and Intel)
+I did get inspiration for the action wheel from [Tangerine](https://github.com/Tangerine-Community/Tangerine). I am sure their designers think I butchered the look, but props to them for the awesome app.
 
-```sh
-brew install --cask shotsmith
-```
+I benefit from open source software, directly and indirectly, every day, so I wanted to do the same. It was a tough decision to go with open-core, but I was satisfied because everything I would have wanted, plus more, is free forever. The paid version, which is dirt cheap, is basically like 2% of obscure features that really are more for people who want to go out of their way to support me to keep improving this. I am just happy if one other person benefits from it.
 
-**Windows 11** (x64 and ARM64)
+My job (Senior Technical Support Engineer) has, for 10+ years, required me to take, mark up, and send screenshots to thousands or tens of thousands of people, and it has always taken more time than it should have.
 
-```powershell
-winget install Shotsmith.Shotsmith
-```
+I have never written a line of code in Rust in my life. I hear it is fast. I don't know. I am not a software engineer.
 
-Or download the latest signed build from [Releases](https://github.com/Smithey/shotsmith/releases).
+## In this version
 
-On first launch on a Mac, allow **Screen Recording** when asked (System Settings › Privacy & Security).
+<img src="docs/assets/history.png" width="720" alt="History, with recent captures and search">
 
-## Default shortcuts
+- **Capture.** Region, window, full screen, repeat the last region, and a timer. A loupe helps line up the region.
+- **Donut.** After a capture, a wheel at the cursor can copy, save, open the editor, or pin.
+- **Editor.** Select, crop, arrow, rectangle, ellipse, line, freehand, text, callout, step counter, highlight, obfuscate, magnify, and an eyedropper. Shapes stay editable after you place them, including after you close the window. Undo and redo. Copy, Save PNG, and Save As.
+- **Obfuscate.** Pixelate, blur, or a solid block, drawn by hand. It is flattened when you export.
+- **Presets.** Format, scale, folder, and a file name pattern. The default preset is what Save uses.
+- **History and pins.** Searchable history. Editing a capture updates its thumbnail. Pins float a capture above other windows.
+- **Settings.** General, Capture, Shortcuts, Presets, Donut, Destinations, Advanced, and About. Shortcuts are click-to-record, with Mac symbols. Appearance follows the system, or you can lock light or dark.
+- **Several editors.** Each capture opens its own window. Right-click the Dock icon to move between Settings, History, and the editors.
+
+<img src="docs/assets/settings.png" width="720" alt="Settings, open on General">
+
+## Not in this version
+
+These are visible in the menu or Settings so the shape of the app is clear. Choosing one tells you it is later, rather than doing nothing:
+
+- Scrolling capture
+- Copy text from the screen, and text selection inside a capture
+- Finding secrets in a capture (emails, keys, card numbers)
+- Beautify: padding, frames, backgrounds
+- Measure: sizes and spacing
+- Share sheet, print, and Open in
+- A `shotsmith` command, a `shotsmith://` link, watch folders, and Apple Shortcuts
+- Plugins and upload destinations
+- Homebrew and winget
+- An auto-updater
+
+## Shotsmith Pro
+
+Pro is **not for sale**. There is no account, no trial, and no checkout.
+
+It will be optional, and it will live in a separate private repository. Official builds can include it later. A build you make from this repository is the free app only.
+
+What Pro is for, once it exists:
+
+- Share links you can expire or password-protect
+- A step-by-step guide recorder
+- Redaction that finds faces and secrets for you
+- Snapping to elements on screen, visual diff, and search across your captures
+- Translate, alt text, and shared style kits
+- Teams: shared kits and one invoice
+
+Pricing is not final. The working figure is about $3.99 a month or $36 a year, with a discount for teams, but nothing is being charged yet.
+
+## Shortcuts
 
 | Action | Mac | Windows |
 |---|---|---|
@@ -69,90 +91,80 @@ On first launch on a Mac, allow **Screen Recording** when asked (System Settings
 | Repeat last region | `⌘⇧1` | `Ctrl+Shift+1` |
 | Window | `⌥⌘⇧2` | `Ctrl+Alt+Shift+2` |
 | Full screen | `⌃⌘⇧2` | `Ctrl+Win+Shift+2` |
-| Copy text from screen | `⌥⌘⇧O` | `Ctrl+Alt+Shift+O` |
+| History | `⌘Y` | `Ctrl+H` |
 
-All shortcuts can be changed in Settings.
-
-## Free forever
-
-Shotsmith is **open core**. This repository is the complete free app, MIT-licensed, and nothing in it will ever move behind a paywall.
-
-An optional **Shotsmith Pro** plan adds cloud and team features and funds development, code signing and hosting:
-
-| | Free | Pro | Teams (5+ seats) |
-|---|---|---|---|
-| Price | **$0 forever** | **$3.99/month** or $36/year | **15% off Pro** per seat |
-| Every core feature above | ✓ | ✓ | ✓ |
-| Share links (expiry, password) · 5 GB | | ✓ | ✓ |
-| Step-guide recorder | | ✓ | ✓ |
-| Smart auto-redaction (faces, per preset) | | ✓ | ✓ |
-| Element snapping · visual diff · search by meaning | | ✓ | ✓ |
-| Translate · alt text · style kits | | ✓ | ✓ |
-| Shared style kits, one invoice | | | ✓ |
-
-Pro has a 14-day free trial with no card. Prices in USD; tax added where required. Pro code lives in a separate private repository and is only included in official builds.
+You can change these in Settings.
 
 ## Privacy
 
-- The free app makes **no network requests** (the optional update check is off until you turn it on).
-- Redaction, OCR and search run **on your computer**.
-- With Pro, only images you choose to share or sync are uploaded. See [PRIVACY.md](PRIVACY.md).
+The free app does not phone home. There is no telemetry. Redaction and any later text recognition run on your Mac. See [PRIVACY.md](PRIVACY.md).
 
-## Build from source
+On first launch, macOS asks for Screen Recording. Some actions also need Accessibility. Both stay in System Settings, Privacy & Security.
 
-Requirements: [Rust](https://rustup.rs) (stable), Node.js 20+ with pnpm, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+## Install
+
+Signed downloads will appear on [Releases](https://github.com/Smithey/shotsmith/releases) after a push to `main`, once the Apple signing secrets below are set. Until then, build it yourself. An ad-hoc build opens on the Mac that built it. Other Macs will refuse it until it is signed with a Developer ID and notarized.
 
 ```sh
 git clone https://github.com/Smithey/shotsmith.git
 cd shotsmith
 pnpm install
-pnpm tauri dev        # run in development
-pnpm tauri build      # signed builds need your own certificates
-cargo test --workspace
-```
-
-Self-built copies are the full free app, without Pro.
-
-### Test on your Mac
-
-Run this on macOS 14 or newer, with Xcode Command Line Tools installed (`xcode-select --install`).
-
-```sh
-pnpm install
 pnpm tauri build
 open target/release/bundle/macos/Shotsmith.app
 ```
 
-The `.app` is ad-hoc signed, so it opens on the Mac that built it. A disk image is written beside it at `target/release/bundle/dmg/`. Shotsmith runs from the menu bar. On the first capture, allow Screen Recording in System Settings, Privacy & Security.
+You need Rust (stable), Node.js 20 or newer, pnpm, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/). The disk image is written to `target/release/bundle/dmg/`.
 
-A paid Apple Developer Program membership covers Mac apps. Use it to create a **Developer ID Application** certificate in that same team when you want other Macs to open the app. An iOS distribution certificate is a separate certificate and is not used by this build.
+## Signing releases
 
-## Project layout
+Other Macs only open the app if it is signed with a **Developer ID Application** certificate and notarized by Apple. That needs:
 
+1. An [Apple Developer Program](https://developer.apple.com/programs/) membership ($99 a year). An iOS distribution certificate is a different certificate and is not used here.
+2. A **Developer ID Application** certificate, created for the same team, exported as a `.p12` (certificate plus private key).
+3. An app-specific password for your Apple ID, from [account.apple.com](https://account.apple.com), so the release job can notarize. An App Store Connect API key works instead.
+4. These [Actions secrets](https://github.com/Smithey/shotsmith/settings/secrets/actions) on this repository:
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | The `.p12` file, base64-encoded (`base64 -i Certificate.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_TEAM_ID` | The 10-character Team ID |
+| `APPLE_ID` | The Apple ID email |
+| `APPLE_PASSWORD` | The app-specific password |
+
+A push to `main` builds an Apple silicon disk image and a Windows 11 64-bit installer, then attaches both to a GitHub Release. The Mac image is signed and notarized when those secrets exist. Without them, that image is only ad-hoc signed.
+
+## Check a download
+
+Each release includes `SHA256SUMS`, and the workflow publishes a GitHub build attestation for the installers.
+
+On a Mac, from the folder where you downloaded the release files:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+gh attestation verify Shotsmith_0.1.0_aarch64.dmg --repo Smithey/shotsmith
 ```
-crates/      Rust core: capture, document model, renderer, OCR, history, CLI
-app/         Tauri 2 shell: windows, tray/menu bar, shortcuts, IPC
-ui/          React + TypeScript interface (overlay, donut, editor, settings)
-mac-intents/ Apple Shortcuts integration (Mac only)
-docs/        User and developer docs
+
+On Windows, in PowerShell:
+
+```powershell
+Get-FileHash .\Shotsmith_0.1.0_x64-setup.exe -Algorithm SHA256
 ```
 
-## Roadmap
-
-- [x] v0.1: capture, donut, editor, presets, history (Mac + Windows)
-- [ ] v0.2: pins, OCR, secret detection, effects, share/print
-- [ ] v0.3: beautify, measure, live text, scrolling capture, CLI, watch folders
-- [ ] v1.0: plugins, localisation, updater, Homebrew + winget
-- [ ] Pro: share links, step guides, smart redaction and more
+Match that hash to the line for the same file in `SHA256SUMS`. The checksum and the attestation show that the file is the one this workflow built. Use the file name from the release if the version in the example has moved on.
 
 ## Contributing
 
-Contributions are welcome: bug reports, translations, docs and code. Please read [CONTRIBUTING.md](CONTRIBUTING.md). Commits need a [Developer Certificate of Origin](https://developercertificate.org/) sign-off (`git commit -s`).
+Pull requests are welcome from anyone. `main` only changes through a pull request, and it needs a review from [@Smithey](https://github.com/Smithey) before it merges.
 
-## Support the project
+Bug reports, translations, docs, and code all fit. Read [CONTRIBUTING.md](CONTRIBUTING.md). Commits need a [Developer Certificate of Origin](https://developercertificate.org/) sign-off (`git commit -s`).
 
-The best way to support Shotsmith is to [try Pro](https://shotsmith.app/#pricing) or tell a friend. Starring the repo helps others find it.
+```sh
+cargo test --workspace
+pnpm typecheck
+```
 
 ## Licence
 
-The Shotsmith app in this repository is released under the [MIT Licence](LICENSE). Shotsmith Pro is proprietary and not part of this repository. “Shotsmith” and the anvil logo are trademarks of their owner.
+The app in this repository is [MIT](LICENSE). Shotsmith Pro is not in this repository. “Shotsmith” and the anvil logo are trademarks of their owner.
