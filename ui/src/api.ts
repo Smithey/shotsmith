@@ -100,6 +100,7 @@ export type EditorState = {
   canUndo: boolean;
   canRedo: boolean;
   dirty: boolean;
+  pixelsChanged?: boolean;
 };
 
 export const SWATCHES = ["#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#007AFF", "#AF52DE", "#1D1D1F"];

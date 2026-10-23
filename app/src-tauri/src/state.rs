@@ -148,6 +148,8 @@ pub struct EditorSession {
     /// Pixel snapshots lined up with the undo stack. `None` means that step did not change the image.
     pub pixels_past: Vec<Option<Vec<u8>>>,
     pub pixels_future: Vec<Option<Vec<u8>>>,
+    /// Decoded capture. Cleared when a crop replaces the file.
+    pub image: Option<image::RgbaImage>,
 }
 
 #[derive(Clone)]

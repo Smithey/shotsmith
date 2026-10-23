@@ -1,4 +1,5 @@
 use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 use shotsmith_core::{Document, ImageFormat};
 use std::io::Cursor;
@@ -11,6 +12,14 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 pub enum OutputError {
     #[error("{0}")]
     Message(String),
+}
+
+pub fn encode_png_fast(image: &RgbaImage) -> Result<Vec<u8>, OutputError> {
+    let mut bytes = Vec::new();
+    PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, FilterType::NoFilter)
+        .write_image(image.as_raw(), image.width(), image.height(), ExtendedColorType::Rgba8)
+        .map_err(|err| OutputError::Message(err.to_string()))?;
+    Ok(bytes)
 }
 
 pub fn encode(image: &RgbaImage, format: ImageFormat, quality: f32) -> Result<Vec<u8>, OutputError> {
@@ -51,11 +60,12 @@ pub fn write_shotsmith(path: &Path, doc: &Document, original_png: &[u8]) -> Resu
     let json = serde_json::to_vec_pretty(doc).map_err(|err| OutputError::Message(err.to_string()))?;
     let file = std::fs::File::create(path).map_err(|err| OutputError::Message(err.to_string()))?;
     let mut zip = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    zip.start_file("document.json", options)
+    let json_options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let png_options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    zip.start_file("document.json", json_options)
         .map_err(|err| OutputError::Message(err.to_string()))?;
     std::io::Write::write_all(&mut zip, &json).map_err(|err| OutputError::Message(err.to_string()))?;
-    zip.start_file("original.png", options)
+    zip.start_file("original.png", png_options)
         .map_err(|err| OutputError::Message(err.to_string()))?;
     std::io::Write::write_all(&mut zip, original_png)
         .map_err(|err| OutputError::Message(err.to_string()))?;

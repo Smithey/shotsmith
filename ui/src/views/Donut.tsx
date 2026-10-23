@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, currentWindow, onRefresh, type DonutState } from "../api";
+import { api, assetUrl, currentWindow, onRefresh, type DonutState } from "../api";
 
 const SIZE = 300;
 const CENTER = 150;
@@ -83,7 +83,7 @@ export function Donut() {
         })}
       </svg>
       <div className="donut-center">
-        {state.preview && <img src={state.preview} alt="" />}
+        {state.imagePath && <img src={assetUrl(state.imagePath)} alt="" />}
         <span>{state.width}×{state.height}</span>
       </div>
       {error && <p className="error donut-status">{error}</p>}

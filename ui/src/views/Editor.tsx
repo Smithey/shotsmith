@@ -34,6 +34,10 @@ export function Editor() {
   const [fill, setFill] = useState("#FFFFFF");
   const [textSize, setTextSize] = useState(18);
   const [blockSize, setBlockSize] = useState(12);
+  const [shadowBlur, setShadowBlur] = useState(8);
+  const [shadowX, setShadowX] = useState(0);
+  const [shadowY, setShadowY] = useState(3);
+  const [shadowOpacity, setShadowOpacity] = useState(35);
   const [coverMode, setCoverMode] = useState<"pixelate" | "blur" | "solid">("pixelate");
   const [coverColor, setCoverColor] = useState("#1D1D1F");
   const [presets, setPresets] = useState<Preset[]>([]);
@@ -61,7 +65,13 @@ export function Editor() {
   const editRef = useRef<HTMLTextAreaElement>(null);
   const pending = useRef(Promise.resolve());
   const docRef = useRef(doc);
-  docRef.current = doc;
+  const frame = useRef(0);
+  const canvasSize = useRef({ w: 0, h: 0 });
+  const gesture = useRef(false);
+  const arrowing = useRef(false);
+  const view = useRef({ zoom, pan, selected, editing, cropBox, marquee, fast: false });
+  if (!gesture.current) docRef.current = doc;
+  view.current = { ...view.current, zoom, pan, selected, editing, cropBox, marquee };
 
   async function load() {
     const [next, list, settings] = await Promise.all([api.editor(), api.presets(), api.settings()]);
@@ -86,29 +96,66 @@ export function Editor() {
     });
   }
 
-  function paint(document = doc, ids = selected) {
+  function paint(document = docRef.current, ids = view.current.selected, fast = view.current.fast) {
     const canvas = canvasRef.current;
     if (!canvas || !document) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * devicePixelRatio;
-    canvas.height = rect.height * devicePixelRatio;
+    const width = Math.max(1, Math.round(rect.width * devicePixelRatio));
+    const height = Math.max(1, Math.round(rect.height * devicePixelRatio));
+    if (canvasSize.current.w !== width || canvasSize.current.h !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      canvasSize.current = { w: width, h: height };
+    }
+    const { zoom: z, pan: p, editing: editingId, cropBox: crop, marquee: box } = view.current;
     ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
     const image = imageRef.current;
     const ready = image != null && image.complete && image.naturalWidth === document.width && image.naturalHeight === document.height;
-    drawDocument(ctx, ready ? image : null, document, zoom, pan.x, pan.y, ids, editing);
-    if (cropBox) drawCrop(ctx, document, cropBox, zoom, pan.x, pan.y);
-    if (marquee) {
+    drawDocument(ctx, ready ? image : null, document, z, p.x, p.y, ids, editingId, fast);
+    if (crop) drawCrop(ctx, document, crop, z, p.x, p.y);
+    if (box) {
       ctx.save();
-      ctx.translate(pan.x, pan.y);
-      ctx.scale(zoom, zoom);
+      ctx.translate(p.x, p.y);
+      ctx.scale(z, z);
       ctx.strokeStyle = "#0A84FF";
-      ctx.lineWidth = 1 / zoom;
-      ctx.setLineDash([4 / zoom, 3 / zoom]);
-      ctx.strokeRect(marquee.x, marquee.y, marquee.w, marquee.h);
+      ctx.lineWidth = 1 / z;
+      ctx.setLineDash([4 / z, 3 / z]);
+      ctx.strokeRect(box.x, box.y, box.w, box.h);
       ctx.restore();
     }
+  }
+
+  function schedulePaint(fast = false) {
+    if (fast) view.current.fast = true;
+    if (frame.current) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = 0;
+      paint();
+    });
+  }
+
+  function preview(next: Document, fast = false) {
+    docRef.current = next;
+    gesture.current = true;
+    view.current.fast = fast;
+    schedulePaint(fast);
+  }
+
+  function endGesture() {
+    if (!gesture.current) return;
+    gesture.current = false;
+    view.current.fast = false;
+    if (frame.current) {
+      cancelAnimationFrame(frame.current);
+      frame.current = 0;
+    }
+    const current = docRef.current;
+    if (!current) return;
+    paint(current, view.current.selected, false);
+    commit(current);
   }
 
   useEffect(() => {
@@ -122,6 +169,20 @@ export function Editor() {
     whenBitmapsLoad(() => paint());
     paint();
   }, [doc, zoom, pan, selected, cropBox, marquee, editing, imageRev]);
+
+  useEffect(() => {
+    const object = doc?.objects.find((item) => item.id === selected[selected.length - 1]);
+    if (!object) return;
+    if ("strokeWidth" in object) setStrokeWidth(object.strokeWidth);
+    if (object.type === "text" || object.type === "counter") setTextSize(object.size);
+    if (object.type === "obfuscate") setBlockSize(object.blockSize);
+    if ("shadowBlur" in object) {
+      setShadowBlur(object.shadowBlur);
+      setShadowX(object.shadowX);
+      setShadowY(object.shadowY);
+      setShadowOpacity(Math.round(object.shadowOpacity * 100));
+    }
+  }, [doc, selected]);
 
   useEffect(() => {
     if (!editing) return;
@@ -146,29 +207,43 @@ export function Editor() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") api.copyEditor();
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "0") setZoom(fit());
       if ((event.metaKey || event.ctrlKey) && event.key === "1") setZoom(1);
-      if ((event.key === "Delete" || event.key === "Backspace") && selected.length && doc) {
-        const next = { ...doc, objects: doc.objects.filter((object) => !selected.includes(idOf(object))) };
+      const current = docRef.current;
+      const ids = view.current.selected;
+      if ((event.key === "Delete" || event.key === "Backspace") && ids.length && current) {
+        const next = { ...current, objects: current.objects.filter((object) => !ids.includes(idOf(object))) };
         renumber(next);
         commit(next);
         setSelected([]);
       }
-      if (doc && selected.length && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      if (current && ids.length && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
         const step = event.shiftKey ? 10 : 1;
         const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
         const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
-        commit(moveSelected(doc, selected, dx, dy));
+        arrowing.current = true;
+        const moved = moveSelected(current, ids, dx, dy);
+        preview(moved, liveObfuscate(moved));
       }
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!arrowing.current) return;
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      arrowing.current = false;
+      endGesture();
+    };
     window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
     window.addEventListener("beforeunload", (event) => { if (state?.dirty) event.preventDefault(); });
-    return () => window.removeEventListener("keydown", onKey);
-  }, [doc, selected, state, zoom]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [state, zoom]);
 
   function applyRemote(next: EditorState) {
     docRef.current = next.document;
     setState(next);
     setDoc(next.document);
-    showPicture().catch((err: Error) => setError(err.message));
+    if (next.pixelsChanged) showPicture().catch((err: Error) => setError(err.message));
   }
 
   function enqueue(job: () => Promise<unknown>) {
@@ -189,6 +264,10 @@ export function Editor() {
   function remember(next: Document) {
     docRef.current = next;
     setDoc(next);
+  }
+
+  function liveObfuscate(next: Document) {
+    return next.objects.some((object) => object.type === "obfuscate" && object.mode !== "solid");
   }
 
   function onDown(event: React.PointerEvent) {
@@ -299,13 +378,15 @@ export function Editor() {
       active.x = p.x;
       active.y = p.y;
       active.moved = true;
-      remember(moveSelected(current, active.ids, dx, dy));
+      const moved = moveSelected(current, active.ids, dx, dy);
+      preview(moved, liveObfuscate(moved));
       return;
     }
     if (active.mode === "resize") {
       active.moved = true;
       const next = applyHandle(active.object, active.handle, p);
-      remember({ ...current, objects: current.objects.map((object) => object.id === next.id ? next : object) });
+      const resized = { ...current, objects: current.objects.map((object) => object.id === next.id ? next : object) };
+      preview(resized, liveObfuscate(resized));
       return;
     }
     active.moved = true;
@@ -317,7 +398,8 @@ export function Editor() {
       const h = event.shiftKey ? Math.sign(p.y - active.y || 1) * Math.abs(w) : p.y - active.y;
       active.object = resizeObject(active.object, active.x, active.y, w, h, event.altKey);
     }
-    remember({ ...current, objects: [...current.objects.filter((item) => item.id !== active.object.id), active.object] });
+    const drawn = { ...current, objects: [...current.objects.filter((item) => item.id !== active.object.id), active.object] };
+    preview(drawn, liveObfuscate(drawn));
   }
 
   function onUp() {
@@ -341,17 +423,19 @@ export function Editor() {
       return;
     }
     if (active.mode === "move" || active.mode === "resize") {
-      if (active.moved) commit(current);
+      if (active.moved) endGesture();
       return;
     }
     const box = bounds(active.object);
     if (!active.moved || (box && box.w < 2 && box.h < 2 && active.object.type !== "freehand")) {
+      gesture.current = false;
+      view.current.fast = false;
       remember({ ...current, objects: current.objects.filter((item) => item.id !== active.object.id) });
       return;
     }
-    const next = { ...current, objects: [...current.objects.filter((item) => item.id !== active.object.id), active.object] };
+    docRef.current = { ...current, objects: [...current.objects.filter((item) => item.id !== active.object.id), active.object] };
     setSelected([active.object.id]);
-    commit(next);
+    endGesture();
   }
 
   useEffect(() => {
@@ -404,8 +488,8 @@ export function Editor() {
   const section = selectedObject?.type === "text" ? "Text · selected" : selectedObject ? `${TOOL_LABEL[selectedObject.type as Tool] ?? selectedObject.type} · selected` : TOOL_LABEL[tool];
   const shownColor = colorOf(selectedObject) ?? stroke;
   const shownFill = selectedObject && "fill" in selectedObject && selectedObject.type !== "counter" ? selectedObject.fill : fill;
-  const shownWeight = selectedObject && "strokeWidth" in selectedObject ? selectedObject.strokeWidth : strokeWidth;
-  const shownSize = selectedObject?.type === "text" || selectedObject?.type === "counter" ? selectedObject.size : textSize;
+  const shownWeight = strokeWidth;
+  const shownSize = textSize;
   const showText = selectedObject ? selectedObject.type === "text" : tool === "text" || tool === "callout";
   const showFill = showText || (selectedObject ? selectedObject.type === "rect" || selectedObject.type === "ellipse" : tool === "rect" || tool === "ellipse");
   const showWeight = selectedObject ? "strokeWidth" in selectedObject : ["arrow", "rect", "ellipse", "line", "freehand"].includes(tool);
@@ -428,22 +512,27 @@ export function Editor() {
 
   function paintSize(next: number) {
     setTextSize(next);
-    if (!doc || !selectedObject) return;
+    const current = docRef.current;
+    if (!current || !selectedObject) return;
     if (selectedObject.type === "text") {
-      commit({ ...doc, objects: doc.objects.map((object) => object.type === "text" && object.id === selectedObject.id ? { ...object, size: next } : object) });
+      const nextDoc = { ...current, objects: current.objects.map((object) => object.type === "text" && object.id === selectedObject.id ? { ...object, size: next } : object) };
+      preview(nextDoc, liveObfuscate(nextDoc));
     }
     if (selectedObject.type === "counter") {
-      commit({ ...doc, objects: doc.objects.map((object) => object.type === "counter" && object.id === selectedObject.id ? { ...object, size: next } : object) });
+      const nextDoc = { ...current, objects: current.objects.map((object) => object.type === "counter" && object.id === selectedObject.id ? { ...object, size: next } : object) };
+      preview(nextDoc, liveObfuscate(nextDoc));
     }
   }
 
   function paintWeight(next: number) {
     setStrokeWidth(next);
-    if (!doc || !selected.length) return;
-    commit({
-      ...doc,
-      objects: doc.objects.map((object) => selected.includes(idOf(object)) && "strokeWidth" in object ? { ...object, strokeWidth: next } : object),
-    });
+    const current = docRef.current;
+    if (!current || !selected.length) return;
+    const nextDoc = {
+      ...current,
+      objects: current.objects.map((object) => selected.includes(idOf(object)) && "strokeWidth" in object ? { ...object, strokeWidth: next } : object),
+    };
+    preview(nextDoc, liveObfuscate(nextDoc));
   }
 
   function setObfuscateMode(mode: "pixelate" | "blur" | "solid") {
@@ -458,18 +547,22 @@ export function Editor() {
     commit(recolor(doc, [obfuscate.id], color));
   }
 
-  function paintShadow(patch: { shadow?: boolean; shadowBlur?: number; shadowX?: number; shadowY?: number; shadowOpacity?: number }) {
-    if (!doc || !selected.length) return;
-    commit({
-      ...doc,
-      objects: doc.objects.map((object) => selected.includes(idOf(object)) && "shadow" in object ? { ...object, ...patch } : object),
-    });
+  function paintShadow(patch: { shadow?: boolean; shadowBlur?: number; shadowX?: number; shadowY?: number; shadowOpacity?: number }, live = false) {
+    const current = docRef.current;
+    if (!current || !selected.length) return;
+    const next = {
+      ...current,
+      objects: current.objects.map((object) => selected.includes(idOf(object)) && "shadow" in object ? { ...object, ...patch } : object),
+    };
+    if (live) preview(next, liveObfuscate(next));
+    else commit(next);
   }
 
   function setObfuscateBlock(next: number) {
     setBlockSize(next);
-    if (!obfuscate || !doc) return;
-    commit({ ...doc, objects: doc.objects.map((object) => object.type === "obfuscate" && object.id === obfuscate.id ? { ...object, blockSize: next } : object) });
+    const current = docRef.current;
+    if (!obfuscate || !current) return;
+    preview({ ...current, objects: current.objects.map((object) => object.type === "obfuscate" && object.id === obfuscate.id ? { ...object, blockSize: next } : object) }, obfuscate.mode !== "solid");
   }
 
   function toggleEffect(effect: Effect) {
@@ -582,10 +675,10 @@ export function Editor() {
               }}><option value="bold">System · Bold</option><option value="regular">System</option></select></div>
             )}
             {(showText || tool === "counter" || selectedObject?.type === "counter") && (
-              <div className="ed-line"><label htmlFor="ed-size">Size</label><input id="ed-size" type="range" min={10} max={72} value={shownSize} onChange={(event) => paintSize(Number(event.target.value))} /><span>{Math.round(shownSize)}</span></div>
+              <div className="ed-line"><label htmlFor="ed-size">Size</label><input id="ed-size" type="range" min={10} max={72} value={shownSize} onChange={(event) => paintSize(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shownSize)}</span></div>
             )}
             {showWeight && (
-              <div className="ed-line"><label htmlFor="ed-weight">Weight</label><input id="ed-weight" type="range" min={1} max={24} value={shownWeight} onChange={(event) => paintWeight(Number(event.target.value))} /><span>{Math.round(shownWeight)}</span></div>
+              <div className="ed-line"><label htmlFor="ed-weight">Weight</label><input id="ed-weight" type="range" min={1} max={24} value={shownWeight} onChange={(event) => paintWeight(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shownWeight)}</span></div>
             )}
             {showFill && <ColourChoices label="Fill" value={shownFill} allowNone onPick={paintFill} />}
             {selectedObject && "shadow" in selectedObject && (
@@ -593,14 +686,14 @@ export function Editor() {
             )}
             {selectedObject && "shadow" in selectedObject && selectedObject.shadow && (
               <>
-                <div className="ed-line"><label htmlFor="ed-shadow-blur">Blur</label><input id="ed-shadow-blur" type="range" min={0} max={40} value={selectedObject.shadowBlur} onChange={(event) => paintShadow({ shadowBlur: Number(event.target.value) })} /><span>{Math.round(selectedObject.shadowBlur)}</span></div>
-                <div className="ed-line"><label htmlFor="ed-shadow-x">X</label><input id="ed-shadow-x" type="range" min={-40} max={40} value={selectedObject.shadowX} onChange={(event) => paintShadow({ shadowX: Number(event.target.value) })} /><span>{Math.round(selectedObject.shadowX)}</span></div>
-                <div className="ed-line"><label htmlFor="ed-shadow-y">Y</label><input id="ed-shadow-y" type="range" min={-40} max={40} value={selectedObject.shadowY} onChange={(event) => paintShadow({ shadowY: Number(event.target.value) })} /><span>{Math.round(selectedObject.shadowY)}</span></div>
-                <div className="ed-line"><label htmlFor="ed-shadow-opacity">Opacity</label><input id="ed-shadow-opacity" type="range" min={0} max={100} value={Math.round(selectedObject.shadowOpacity * 100)} onChange={(event) => paintShadow({ shadowOpacity: Number(event.target.value) / 100 })} /><span>{Math.round(selectedObject.shadowOpacity * 100)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-blur">Blur</label><input id="ed-shadow-blur" type="range" min={0} max={40} value={shadowBlur} onChange={(event) => { const next = Number(event.target.value); setShadowBlur(next); paintShadow({ shadowBlur: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowBlur)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-x">X</label><input id="ed-shadow-x" type="range" min={-40} max={40} value={shadowX} onChange={(event) => { const next = Number(event.target.value); setShadowX(next); paintShadow({ shadowX: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowX)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-y">Y</label><input id="ed-shadow-y" type="range" min={-40} max={40} value={shadowY} onChange={(event) => { const next = Number(event.target.value); setShadowY(next); paintShadow({ shadowY: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowY)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-opacity">Opacity</label><input id="ed-shadow-opacity" type="range" min={0} max={100} value={shadowOpacity} onChange={(event) => { const next = Number(event.target.value); setShadowOpacity(next); paintShadow({ shadowOpacity: next / 100 }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowOpacity)}</span></div>
               </>
             )}
             {selectedObject?.type === "text" && (
-              <textarea className="ed-text" value={selectedObject.text} onChange={(event) => doc && commit(updateText(doc, selectedObject.id, event.target.value))} />
+              <textarea className="ed-text" value={selectedObject.text} onChange={(event) => doc && remember(updateText(doc, selectedObject.id, event.target.value))} onBlur={() => { const current = docRef.current; if (current) commit(current); }} />
             )}
           </div>}
           {showObfuscate && <div className="ed-rule" />}
@@ -612,7 +705,7 @@ export function Editor() {
               ))}
             </div>
             {obfuscateMode === "solid" && <ColourChoices label="Colour" value={obfuscate?.color ?? coverColor} onPick={setObfuscateColor} />}
-            {obfuscateMode !== "solid" && <div className="ed-line"><label htmlFor="ed-px">Block size</label><input id="ed-px" type="range" min={4} max={40} value={obfuscate?.blockSize ?? blockSize} onChange={(event) => setObfuscateBlock(Number(event.target.value))} /><span>{obfuscate?.blockSize ?? blockSize}</span></div>}
+            {obfuscateMode !== "solid" && <div className="ed-line"><label htmlFor="ed-px">Block size</label><input id="ed-px" type="range" min={4} max={40} value={blockSize} onChange={(event) => setObfuscateBlock(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{blockSize}</span></div>}
             <p>Flattened on export. Original pixels are never written to the file.</p>
           </div>}
           {showEffects && <div className="ed-rule" />}

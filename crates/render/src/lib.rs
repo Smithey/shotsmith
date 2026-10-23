@@ -151,96 +151,175 @@ fn draw_highlight(pixmap: &mut Pixmap, o: &shotsmith_core::HighlightObject) {
 }
 
 fn draw_obfuscate(pixmap: &mut Pixmap, o: &shotsmith_core::ObfuscateObject) {
-    let image = pixmap_to_image(pixmap);
-    let x0 = o.x.floor().max(0.0) as u32;
-    let y0 = o.y.floor().max(0.0) as u32;
-    let x1 = (o.x + o.w).ceil().max(0.0) as u32;
-    let y1 = (o.y + o.h).ceil().max(0.0) as u32;
-    let x1 = x1.min(image.width());
-    let y1 = y1.min(image.height());
+    let width = pixmap.width();
+    let height = pixmap.height();
+    let x0 = (o.x.floor().max(0.0) as u32).min(width);
+    let y0 = (o.y.floor().max(0.0) as u32).min(height);
+    let x1 = ((o.x + o.w).ceil().max(0.0) as u32).min(width);
+    let y1 = ((o.y + o.h).ceil().max(0.0) as u32).min(height);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let mut edited = image.clone();
     match o.mode {
         ObfuscateMode::Solid => {
-            let (r, g, b, a) = parse_hex(&o.color).unwrap_or((0, 0, 0, 255));
+            let (r, g, b, _) = parse_hex(&o.color).unwrap_or((0, 0, 0, 255));
+            let data = pixmap.data_mut();
             for y in y0..y1 {
-                for x in x0..x1 {
-                    edited.put_pixel(x, y, Rgba([r, g, b, a]));
+                let mut i = ((y * width + x0) * 4) as usize;
+                for _ in x0..x1 {
+                    data[i] = r;
+                    data[i + 1] = g;
+                    data[i + 2] = b;
+                    data[i + 3] = 255;
+                    i += 4;
                 }
             }
         }
-        ObfuscateMode::Pixelate => {
-            let block = o.block_size.max(2);
-            let mut y = y0;
-            while y < y1 {
-                let mut x = x0;
-                let bh = (y + block).min(y1);
-                while x < x1 {
-                    let bw = (x + block).min(x1);
-                    let mut sr = 0u64;
-                    let mut sg = 0u64;
-                    let mut sb = 0u64;
-                    let mut n = 0u64;
-                    for py in y..bh {
-                        for px in x..bw {
-                            let p = image.get_pixel(px, py).0;
-                            sr += p[0] as u64;
-                            sg += p[1] as u64;
-                            sb += p[2] as u64;
-                            n += 1;
-                        }
-                    }
-                    let color = Rgba([
-                        (sr / n) as u8,
-                        (sg / n) as u8,
-                        (sb / n) as u8,
-                        255,
-                    ]);
-                    for py in y..bh {
-                        for px in x..bw {
-                            edited.put_pixel(px, py, color);
-                        }
-                    }
-                    x = bw;
+        ObfuscateMode::Pixelate => pixelate_region(pixmap, x0, y0, x1, y1, o.block_size.max(2)),
+        ObfuscateMode::Blur => blur_region(pixmap, x0, y0, x1, y1, o.block_size.max(1)),
+    }
+}
+
+fn pixelate_region(pixmap: &mut Pixmap, x0: u32, y0: u32, x1: u32, y1: u32, block: u32) {
+    let width = pixmap.width();
+    let source = pixmap.data().to_vec();
+    let data = pixmap.data_mut();
+    let mut y = y0;
+    while y < y1 {
+        let bh = (y + block).min(y1);
+        let mut x = x0;
+        while x < x1 {
+            let bw = (x + block).min(x1);
+            let mut sr = 0u64;
+            let mut sg = 0u64;
+            let mut sb = 0u64;
+            let mut n = 0u64;
+            for py in y..bh {
+                let mut i = ((py * width + x) * 4) as usize;
+                for _ in x..bw {
+                    sr += source[i] as u64;
+                    sg += source[i + 1] as u64;
+                    sb += source[i + 2] as u64;
+                    n += 1;
+                    i += 4;
                 }
-                y = bh;
             }
+            let color = [(sr / n) as u8, (sg / n) as u8, (sb / n) as u8];
+            for py in y..bh {
+                let mut i = ((py * width + x) * 4) as usize;
+                for _ in x..bw {
+                    data[i] = color[0];
+                    data[i + 1] = color[1];
+                    data[i + 2] = color[2];
+                    data[i + 3] = 255;
+                    i += 4;
+                }
+            }
+            x = bw;
         }
-        ObfuscateMode::Blur => {
-            let radius = o.block_size.max(1) as i32;
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let mut sr = 0u64;
-                    let mut sg = 0u64;
-                    let mut sb = 0u64;
-                    let mut n = 0u64;
-                    for ky in -radius..=radius {
-                        for kx in -radius..=radius {
-                            let px = x as i32 + kx;
-                            let py = y as i32 + ky;
-                            if px < 0 || py < 0 || px >= image.width() as i32 || py >= image.height() as i32
-                            {
-                                continue;
-                            }
-                            let p = image.get_pixel(px as u32, py as u32).0;
-                            sr += p[0] as u64;
-                            sg += p[1] as u64;
-                            sb += p[2] as u64;
-                            n += 1;
-                        }
-                    }
-                    edited.put_pixel(
-                        x,
-                        y,
-                        Rgba([(sr / n) as u8, (sg / n) as u8, (sb / n) as u8, 255]),
-                    );
-                }
-            }
+        y = bh;
+    }
+}
+
+fn blur_region(pixmap: &mut Pixmap, x0: u32, y0: u32, x1: u32, y1: u32, radius: u32) {
+    let width = pixmap.width() as i32;
+    let height = pixmap.height() as i32;
+    let radius = radius as i32;
+    let left = (x0 as i32 - radius).max(0) as u32;
+    let top = (y0 as i32 - radius).max(0) as u32;
+    let right = ((x1 as i32 + radius).min(width) as u32).max(left + 1);
+    let bottom = ((y1 as i32 + radius).min(height) as u32).max(top + 1);
+    let full = pixmap.width();
+    let rw = right - left;
+    let rh = bottom - top;
+    let mut src = vec![0u8; (rw * rh * 4) as usize];
+    let mut dst = vec![0u8; src.len()];
+    {
+        let data = pixmap.data();
+        for row in 0..rh {
+            let from = (((top + row) * full + left) * 4) as usize;
+            let to = (row * rw * 4) as usize;
+            src[to..to + (rw * 4) as usize].copy_from_slice(&data[from..from + (rw * 4) as usize]);
         }
     }
-    *pixmap = image_to_pixmap(&edited);
+    for _ in 0..3 {
+        box_horizontal(&src, &mut dst, rw, rh, radius as u32);
+        box_vertical(&dst, &mut src, rw, rh, radius as u32);
+    }
+    let data = pixmap.data_mut();
+    let ox = x0 - left;
+    let oy = y0 - top;
+    for row in 0..(y1 - y0) {
+        let from = (((oy + row) * rw + ox) * 4) as usize;
+        let to = (((y0 + row) * full + x0) * 4) as usize;
+        let bytes = ((x1 - x0) * 4) as usize;
+        data[to..to + bytes].copy_from_slice(&src[from..from + bytes]);
+    }
+}
+
+fn box_horizontal(src: &[u8], dst: &mut [u8], width: u32, height: u32, radius: u32) {
+    let span = radius * 2 + 1;
+    let width = width as i32;
+    let radius = radius as i32;
+    for y in 0..height {
+        let row = y * width as u32;
+        let mut r = 0u32;
+        let mut g = 0u32;
+        let mut b = 0u32;
+        let mut a = 0u32;
+        for i in -radius..=radius {
+            let p = ((row + i.clamp(0, width - 1) as u32) * 4) as usize;
+            r += src[p] as u32;
+            g += src[p + 1] as u32;
+            b += src[p + 2] as u32;
+            a += src[p + 3] as u32;
+        }
+        for x in 0..width {
+            let p = ((row + x as u32) * 4) as usize;
+            dst[p] = (r / span) as u8;
+            dst[p + 1] = (g / span) as u8;
+            dst[p + 2] = (b / span) as u8;
+            dst[p + 3] = (a / span) as u8;
+            let remove = ((row + (x - radius).clamp(0, width - 1) as u32) * 4) as usize;
+            let add = ((row + (x + radius + 1).clamp(0, width - 1) as u32) * 4) as usize;
+            r = r + src[add] as u32 - src[remove] as u32;
+            g = g + src[add + 1] as u32 - src[remove + 1] as u32;
+            b = b + src[add + 2] as u32 - src[remove + 2] as u32;
+            a = a + src[add + 3] as u32 - src[remove + 3] as u32;
+        }
+    }
+}
+
+fn box_vertical(src: &[u8], dst: &mut [u8], width: u32, height: u32, radius: u32) {
+    let span = radius * 2 + 1;
+    let height = height as i32;
+    let radius = radius as i32;
+    for x in 0..width {
+        let mut r = 0u32;
+        let mut g = 0u32;
+        let mut b = 0u32;
+        let mut a = 0u32;
+        for i in -radius..=radius {
+            let p = ((i.clamp(0, height - 1) as u32 * width + x) * 4) as usize;
+            r += src[p] as u32;
+            g += src[p + 1] as u32;
+            b += src[p + 2] as u32;
+            a += src[p + 3] as u32;
+        }
+        for y in 0..height {
+            let p = ((y as u32 * width + x) * 4) as usize;
+            dst[p] = (r / span) as u8;
+            dst[p + 1] = (g / span) as u8;
+            dst[p + 2] = (b / span) as u8;
+            dst[p + 3] = (a / span) as u8;
+            let remove = (((y - radius).clamp(0, height - 1) as u32 * width + x) * 4) as usize;
+            let add = (((y + radius + 1).clamp(0, height - 1) as u32 * width + x) * 4) as usize;
+            r = r + src[add] as u32 - src[remove] as u32;
+            g = g + src[add + 1] as u32 - src[remove + 1] as u32;
+            b = b + src[add + 2] as u32 - src[remove + 2] as u32;
+            a = a + src[add + 3] as u32 - src[remove + 3] as u32;
+        }
+    }
 }
 
 fn draw_text(pixmap: &mut Pixmap, o: &shotsmith_core::TextObject) {

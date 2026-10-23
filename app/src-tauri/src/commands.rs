@@ -337,6 +337,7 @@ pub fn editor_open(app: AppHandle, state: State<AppState>, id: String) -> Result
             dirty: false,
             pixels_past: Vec::new(),
             pixels_future: Vec::new(),
+            image: None,
         });
     }
     // Close the wheel first, then open the editor on a later turn. Creating
@@ -378,28 +379,44 @@ fn push_pixels(session: &mut EditorSession, pixels: Option<Vec<u8>>) {
     session.pixels_future.clear();
 }
 
-fn swap_pixels(session: &mut EditorSession, undo: bool) -> Result<(), String> {
+fn swap_pixels(session: &mut EditorSession, undo: bool) -> Result<bool, String> {
     let entry = if undo { session.pixels_past.pop() } else { session.pixels_future.pop() };
     let Some(entry) = entry else {
-        return Ok(());
+        return Ok(false);
     };
-    if let Some(bytes) = entry {
-        let current = std::fs::read(&session.image_path).map_err(err_string)?;
+    let Some(bytes) = entry else {
         if undo {
-            session.pixels_future.push(Some(current));
+            session.pixels_future.push(None);
         } else {
-            session.pixels_past.push(Some(current));
-            if session.pixels_past.len() > 100 {
-                session.pixels_past.remove(0);
-            }
+            session.pixels_past.push(None);
         }
-        write_atomic(std::path::Path::new(&session.image_path), &bytes).map_err(err_string)?;
-    } else if undo {
-        session.pixels_future.push(None);
+        return Ok(false);
+    };
+    let current = std::fs::read(&session.image_path).map_err(err_string)?;
+    if undo {
+        session.pixels_future.push(Some(current));
     } else {
-        session.pixels_past.push(None);
+        session.pixels_past.push(Some(current));
+        if session.pixels_past.len() > 100 {
+            session.pixels_past.remove(0);
+        }
     }
-    Ok(())
+    write_atomic(std::path::Path::new(&session.image_path), &bytes).map_err(err_string)?;
+    session.image = None;
+    Ok(true)
+}
+
+fn with_pixels(session: &EditorSession, changed: bool) -> serde_json::Value {
+    let mut value = session_json(session);
+    value["pixelsChanged"] = serde_json::json!(changed);
+    value
+}
+
+fn ensure_image(session: &mut EditorSession) -> Result<RgbaImage, String> {
+    if session.image.is_none() {
+        session.image = Some(image::open(&session.image_path).map_err(err_string)?.to_rgba8());
+    }
+    Ok(session.image.as_ref().expect("image was just stored").clone())
 }
 
 fn session_json(session: &EditorSession) -> serde_json::Value {
@@ -433,28 +450,27 @@ pub fn editor_state(window: WebviewWindow, state: State<AppState>) -> Result<ser
 #[tauri::command]
 pub fn editor_commit(window: WebviewWindow, app: AppHandle, state: State<AppState>, document: Document) -> Result<serde_json::Value, String> {
     let id = editor_key(&window)?;
-    let (capture_id, image_path, response) = {
+    let (capture_id, image_path, changed, response) = {
         let mut editors = state.editors.lock().map_err(err_string)?;
         let Some(session) = editors.get_mut(&id) else {
             return Err("No capture is open.".into());
         };
         let changed = session.stack.current() != &document;
-        session.stack.commit(document);
-        session.dirty = true;
         if changed {
+            session.stack.commit(document);
+            session.dirty = true;
             push_pixels(session, None);
         }
         (
             session.capture_id.clone(),
             session.image_path.clone(),
-            serde_json::json!({
-                "document": session.stack.current(),
-                "canUndo": session.stack.can_undo(),
-                "canRedo": session.stack.can_redo(),
-            }),
+            changed,
+            session_json(session),
         )
     };
-    publish_edits(&app, &state, &capture_id, &image_path)?;
+    if changed {
+        publish_edits(&app, &state, &capture_id, &image_path)?;
+    }
     Ok(response)
 }
 
@@ -470,16 +486,12 @@ pub fn editor_undo(window: WebviewWindow, app: AppHandle, state: State<AppState>
             return Ok(session_json(session));
         }
         session.stack.undo();
-        swap_pixels(session, true)?;
+        let pixels_changed = swap_pixels(session, true)?;
         session.dirty = true;
         (
             session.capture_id.clone(),
             session.image_path.clone(),
-            serde_json::json!({
-                "document": session.stack.current(),
-                "canUndo": session.stack.can_undo(),
-                "canRedo": session.stack.can_redo(),
-            }),
+            with_pixels(session, pixels_changed),
         )
     };
     publish_edits(&app, &state, &capture_id, &image_path)?;
@@ -498,16 +510,12 @@ pub fn editor_redo(window: WebviewWindow, app: AppHandle, state: State<AppState>
             return Ok(session_json(session));
         }
         session.stack.redo();
-        swap_pixels(session, false)?;
+        let pixels_changed = swap_pixels(session, false)?;
         session.dirty = true;
         (
             session.capture_id.clone(),
             session.image_path.clone(),
-            serde_json::json!({
-                "document": session.stack.current(),
-                "canUndo": session.stack.can_undo(),
-                "canRedo": session.stack.can_redo(),
-            }),
+            with_pixels(session, pixels_changed),
         )
     };
     publish_edits(&app, &state, &capture_id, &image_path)?;
@@ -542,10 +550,11 @@ pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>
     shotsmith_core::crop_document(&mut document, x as f32, y as f32, cropped.width() as f32, cropped.height() as f32);
     session.stack.commit(document);
     push_pixels(session, Some(before));
+    session.image = Some(cropped);
     session.dirty = true;
     let capture_id = session.capture_id.clone();
     let image_path = session.image_path.clone();
-    let response = session_json(session);
+    let response = with_pixels(session, true);
     drop(editors);
     publish_edits(&app, &state, &capture_id, &image_path)?;
     Ok(response)
@@ -555,8 +564,8 @@ pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>
 pub fn editor_copy(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let id = editor_key(&window)?;
     let image = {
-        let editors = state.editors.lock().map_err(err_string)?;
-        let Some(session) = editors.get(&id) else {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get_mut(&id) else {
             return Err("No capture is open.".into());
         };
         flattened(session)?
@@ -573,8 +582,8 @@ pub fn editor_copy(window: WebviewWindow, app: AppHandle, state: State<AppState>
 pub fn editor_save(window: WebviewWindow, app: AppHandle, state: State<AppState>, preset_id: Option<String>, save_as: Option<String>) -> Result<String, String> {
     let id = editor_key(&window)?;
     let (capture_id, image, document, image_path) = {
-        let editors = state.editors.lock().map_err(err_string)?;
-        let Some(session) = editors.get(&id) else {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get_mut(&id) else {
             return Err("No capture is open.".into());
         };
         (
@@ -933,7 +942,7 @@ fn begin_overlay(app: &AppHandle, state: &State<AppState>, present: bool) -> Res
         .unwrap_or(0);
     for display in &frozen {
         let path = dir.join(format!("{}-{stamp}.png", display.info.id));
-        let png = shotsmith_output::encode(&display.image, ImageFormat::Png, 1.0).map_err(err_string)?;
+        let png = shotsmith_output::encode_png_fast(&display.image).map_err(err_string)?;
         write_atomic(&path, &png).map_err(err_string)?;
         payloads.push(DisplayPayload {
             id: display.info.id,
@@ -1078,7 +1087,7 @@ fn store_and_route(
                 width: image.width(),
                 height: image.height(),
                 image_path: original_path.to_string_lossy().to_string(),
-                preview: thumbnail_data_url(&image),
+                preview: String::new(),
                 slots,
                 cursor_x: shotsmith_platform::cursor_position().0,
                 cursor_y: shotsmith_platform::cursor_position().1,
@@ -1195,7 +1204,11 @@ fn export_with_preset(state: &State<AppState>, image: &RgbaImage, preset: &Prese
             counter: settings.filename_counter,
         },
     );
-    let rendered = shotsmith_render::render(image, &Document::new(image.width(), image.height()), &preset.effects);
+    let rendered = if preset.effects.is_empty() {
+        image.clone()
+    } else {
+        shotsmith_render::render(image, &Document::new(image.width(), image.height()), &preset.effects)
+    };
     let scaled = scale_output(&rendered, preset, scale);
     let bytes = shotsmith_output::encode(&scaled, preset.format, preset.quality).map_err(err_string)?;
     let path = shotsmith_core::collision_path(
@@ -1273,27 +1286,27 @@ fn with_annotations(record: &CaptureRecord, image: &RgbaImage) -> RgbaImage {
     shotsmith_render::render(image, &document, &[])
 }
 
-fn flattened(session: &EditorSession) -> Result<RgbaImage, String> {
-    let image = image::open(&session.image_path).map_err(err_string)?.to_rgba8();
+fn flattened(session: &mut EditorSession) -> Result<RgbaImage, String> {
+    let image = ensure_image(session)?;
     let mut document = session.stack.current().clone();
     shotsmith_extensions::install_builtin().before_export(&mut document);
     Ok(shotsmith_render::render(&image, &document, &[]))
 }
 
 fn publish_edits(app: &AppHandle, state: &State<AppState>, id: &str, image_path: &str) -> Result<(), String> {
-    let document = {
-        let editors = state.editors.lock().map_err(err_string)?;
-        let Some(session) = editors.get(id) else {
+    let (document, image) = {
+        let mut editors = state.editors.lock().map_err(err_string)?;
+        let Some(session) = editors.get_mut(id) else {
             return Ok(());
         };
-        session.stack.current().clone()
+        let image = ensure_image(session)?;
+        (session.stack.current().clone(), image)
     };
     persist_document(state, id, &document)?;
-    let image = image::open(image_path).map_err(err_string)?.to_rgba8();
     let mut flat = document;
     shotsmith_extensions::install_builtin().before_export(&mut flat);
     let rendered = shotsmith_render::render(&image, &flat, &[]);
-    let png = shotsmith_output::encode(&rendered, ImageFormat::Png, 1.0).map_err(err_string)?;
+    let png = shotsmith_output::encode_png_fast(&rendered).map_err(err_string)?;
     write_atomic(&preview_file(image_path), &png).map_err(err_string)?;
     let _ = app.emit("history-changed", ());
     Ok(())
@@ -1328,31 +1341,6 @@ fn persist_document(state: &State<AppState>, id: &str, document: &Document) -> R
     let original = std::fs::read(&record.original_path).unwrap_or_default();
     shotsmith_output::write_shotsmith(std::path::Path::new(&path), document, &original).map_err(err_string)?;
     state.history.lock().map_err(err_string)?.set_document(id, &path).map_err(err_string)
-}
-
-fn thumbnail_data_url(image: &RgbaImage) -> String {
-    let longest = image.width().max(image.height()).max(1) as f32;
-    let scale = (240.0 / longest).min(1.0);
-    let width = (image.width() as f32 * scale).round().max(1.0) as u32;
-    let height = (image.height() as f32 * scale).round().max(1.0) as u32;
-    let thumb = image::imageops::resize(image, width, height, image::imageops::FilterType::Triangle);
-    let mut png = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut png);
-    if image::ImageEncoder::write_image(
-        encoder,
-        thumb.as_raw(),
-        thumb.width(),
-        thumb.height(),
-        image::ExtendedColorType::Rgba8,
-    )
-    .is_err()
-    {
-        return String::new();
-    }
-    format!(
-        "data:image/png;base64,{}",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png)
-    )
 }
 
 fn copy_image(image: &RgbaImage) -> Result<(), String> {

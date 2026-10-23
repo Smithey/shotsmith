@@ -9,6 +9,7 @@ export function drawDocument(
   panY: number,
   selected: string[],
   editing: string | null = null,
+  fast = false,
 ) {
   const canvas = ctx.canvas;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -18,14 +19,10 @@ export function drawDocument(
   const scene = sceneCanvas(doc.width, doc.height);
   const sceneCtx = scene.getContext("2d");
   if (sceneCtx) {
-    sceneCtx.clearRect(0, 0, scene.width, scene.height);
-    if (image && image.complete && image.naturalWidth > 0) sceneCtx.drawImage(image, 0, 0, doc.width, doc.height);
-    else {
-      sceneCtx.fillStyle = "#d0d0d4";
-      sceneCtx.fillRect(0, 0, doc.width, doc.height);
-    }
+    const photo = photoCanvas(image, doc.width, doc.height);
+    sceneCtx.drawImage(photo, 0, 0);
     for (const object of doc.objects) {
-      if (object.type === "obfuscate" && object.mode !== "solid") obfuscateRegion(sceneCtx, object);
+      if (object.type === "obfuscate" && object.mode !== "solid") obfuscateRegion(sceneCtx, object, fast);
       else drawObject(sceneCtx, object, editing);
     }
     ctx.drawImage(scene, 0, 0);
@@ -52,6 +49,33 @@ export function drawDocument(
 }
 
 let scene: HTMLCanvasElement | null = null;
+let photo: HTMLCanvasElement | null = null;
+let photoSource: HTMLImageElement | null = null;
+let photoW = 0;
+let photoH = 0;
+
+function photoCanvas(image: HTMLImageElement | null, width: number, height: number) {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  const source = image && image.complete && image.naturalWidth > 0 ? image : null;
+  if (!photo) photo = document.createElement("canvas");
+  if (photoSource !== source || photoW !== w || photoH !== h) {
+    photo.width = w;
+    photo.height = h;
+    const ctx = photo.getContext("2d");
+    if (ctx) {
+      if (source) ctx.drawImage(source, 0, 0, w, h);
+      else {
+        ctx.fillStyle = "#d0d0d4";
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+    photoSource = source;
+    photoW = w;
+    photoH = h;
+  }
+  return photo;
+}
 
 function sceneCanvas(width: number, height: number) {
   const w = Math.max(1, Math.round(width));
@@ -64,7 +88,7 @@ function sceneCanvas(width: number, height: number) {
   return scene;
 }
 
-function obfuscateRegion(ctx: CanvasRenderingContext2D, object: Extract<AnnotationObject, { type: "obfuscate" }>) {
+function obfuscateRegion(ctx: CanvasRenderingContext2D, object: Extract<AnnotationObject, { type: "obfuscate" }>, fast: boolean) {
   const source = ctx.canvas;
   const x = Math.max(0, Math.floor(Math.min(object.x, object.x + object.w)));
   const y = Math.max(0, Math.floor(Math.min(object.y, object.y + object.h)));
@@ -89,7 +113,24 @@ function obfuscateRegion(ctx: CanvasRenderingContext2D, object: Extract<Annotati
     ctx.imageSmoothingEnabled = true;
     return;
   }
-  blurRegion(ctx, x, y, w, h, Math.max(2, object.blockSize));
+  const radius = Math.max(2, object.blockSize);
+  if (fast) cheapBlur(ctx, x, y, w, h, radius);
+  else blurRegion(ctx, x, y, w, h, radius);
+}
+
+function cheapBlur(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, radius: number) {
+  const factor = Math.max(2, Math.round(radius / 2));
+  const sw = Math.max(1, Math.round(w / factor));
+  const sh = Math.max(1, Math.round(h / factor));
+  const tmp = document.createElement("canvas");
+  tmp.width = sw;
+  tmp.height = sh;
+  const sample = tmp.getContext("2d");
+  if (!sample) return;
+  sample.imageSmoothingEnabled = true;
+  sample.drawImage(ctx.canvas, x, y, w, h, 0, 0, sw, sh);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(tmp, 0, 0, sw, sh, x, y, w, h);
 }
 
 function blurRegion(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, radius: number) {
