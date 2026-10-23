@@ -1,6 +1,6 @@
-# Pushing to main builds a macOS release and attaches it to GitHub Releases.
-# Signing and notarization run only when the Apple secrets in the README are set.
-# Without them the disk image is ad-hoc signed and other Macs will refuse it.
+# Pushing to main builds macOS and Windows installers and attaches them to GitHub Releases.
+# Mac signing and notarization run only when the Apple secrets in the README are set.
+# Every release also gets SHA256SUMS and a GitHub build attestation.
 
 name: Release
 
@@ -11,10 +11,18 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
-  macos:
-    runs-on: macos-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,11 +35,16 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Choose the signing config
-        id: signing
+      - name: Choose the bundle args
+        id: bundle
+        shell: bash
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "args=--target x86_64-pc-windows-msvc" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
             python3 - <<'PY'
           import json, os
@@ -44,15 +57,9 @@ jobs:
               }
           }, open("release-config.json", "w"))
           PY
-            echo "TAURI_ARGS=--target aarch64-apple-darwin --config release-config.json" >> "$GITHUB_ENV"
-            echo "note<<EOF" >> "$GITHUB_OUTPUT"
-            echo "This build is signed with a Developer ID and notarized." >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "args=--target aarch64-apple-darwin --config release-config.json" >> "$GITHUB_OUTPUT"
           else
-            echo "TAURI_ARGS=--target aarch64-apple-darwin" >> "$GITHUB_ENV"
-            echo "note<<EOF" >> "$GITHUB_OUTPUT"
-            echo "This build is not notarized. Other Macs will refuse it until the Apple signing secrets are set. See the README." >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "args=--target aarch64-apple-darwin" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: tauri-apps/tauri-action@v0
@@ -68,10 +75,57 @@ jobs:
           projectPath: app
           tagName: v__VERSION__-build.${{ github.run_number }}
           releaseName: Shotsmith v__VERSION__
-          releaseBody: |
-            macOS 14 or newer. Apple silicon.
-
-            ${{ steps.signing.outputs.note }}
+          releaseBody: Installers for macOS and Windows. SHA256SUMS is added when both builds finish.
           releaseDraft: false
           prerelease: false
-          args: ${{ env.TAURI_ARGS }}
+          args: ${{ steps.bundle.outputs.args }}
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p release-installers
+          find target/release/bundle -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) -exec cp {} release-installers/ \;
+          find release-installers -type f -print
+          test -n "$(find release-installers -type f -print -quit)"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-installers/*
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(jq -r .version app/src-tauri/tauri.conf.json)
+          tag="v${version}-build.${{ github.run_number }}"
+          rm -rf dist
+          mkdir dist
+          gh release download "$tag" --dir dist --clobber
+          rm -f dist/SHA256SUMS
+          (cd dist && sha256sum -- *) > SHA256SUMS
+          gh release upload "$tag" SHA256SUMS --clobber
+          {
+            echo "macOS 14 or newer, Apple silicon."
+            echo "Windows 11, 64-bit. The Windows installer is not Authenticode signed, so SmartScreen may warn."
+            echo
+            echo "SHA256SUMS:"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "On a Mac, from the folder with these files: shasum -a 256 -c SHA256SUMS"
+            echo "On Windows, compare Get-FileHash output with the hash above."
+            echo
+            echo "GitHub build attestation: gh attestation verify FILE --repo Smithey/shotsmith"
+            echo
+            echo "A Mac disk image is notarized only when the Apple signing secrets are set. Until then, other Macs will refuse it."
+          } > release-notes.md
+          gh release edit "$tag" --notes-file release-notes.md

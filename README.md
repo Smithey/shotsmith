@@ -7,7 +7,7 @@
 A free, open-source screenshot tool for the Mac menu bar.
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-black)](LICENSE)
-![Status](https://img.shields.io/badge/status-v0.1%20macOS-black)
+![Status](https://img.shields.io/badge/status-v0.1%20macOS%20%2B%20Windows-black)
 ![Pro](https://img.shields.io/badge/Pro-coming%20soon-FF9F0A)
 
 [Releases](https://github.com/Smithey/shotsmith/releases) · [Website](https://shotsmith.app) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md)
@@ -20,7 +20,7 @@ Shotsmith 0.1 is a menu bar app for macOS 14 and newer. Press the shortcut, drag
 
 This repository is the whole free app, under the MIT licence. Nothing in it is a trial, and nothing here will be moved behind a paywall.
 
-Windows is not shipping yet. The interface is shared, and a Windows build is on the roadmap.
+Releases also include a Windows 11 64-bit installer. That build is not Authenticode signed yet, so Windows SmartScreen may warn until you confirm the checksum below.
 
 ## In this version
 
@@ -49,7 +49,7 @@ These are visible in the menu or Settings so the shape of the app is clear. Choo
 - Share sheet, print, and Open in
 - A `shotsmith` command, a `shotsmith://` link, watch folders, and Apple Shortcuts
 - Plugins and upload destinations
-- Homebrew, winget, and a Windows build
+- Homebrew and winget
 - An auto-updater
 
 ## Shotsmith Pro
@@ -71,7 +71,7 @@ Pricing is not final. The working figure is about $3.99 a month or $36 a year, w
 
 ## Shortcuts
 
-| Action | Mac | Windows, when that build exists |
+| Action | Mac | Windows |
 |---|---|---|
 | Region | `⌘⇧2` | `Ctrl+Shift+2` |
 | Repeat last region | `⌘⇧1` | `Ctrl+Shift+1` |
@@ -119,7 +119,26 @@ Other Macs only open the app if it is signed with a **Developer ID Application**
 | `APPLE_ID` | The Apple ID email |
 | `APPLE_PASSWORD` | The app-specific password |
 
-A push to `main` then builds an Apple silicon app, signs and notarizes it when those secrets exist, and attaches the disk image to a GitHub Release. Without the secrets, the same workflow still publishes a build, and that build is only ad-hoc signed.
+A push to `main` builds an Apple silicon disk image and a Windows 11 64-bit installer, then attaches both to a GitHub Release. The Mac image is signed and notarized when those secrets exist. Without them, that image is only ad-hoc signed.
+
+## Check a download
+
+Each release includes `SHA256SUMS`, and the workflow publishes a GitHub build attestation for the installers.
+
+On a Mac, from the folder where you downloaded the release files:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+gh attestation verify Shotsmith_0.1.0_aarch64.dmg --repo Smithey/shotsmith
+```
+
+On Windows, in PowerShell:
+
+```powershell
+Get-FileHash .\Shotsmith_0.1.0_x64-setup.exe -Algorithm SHA256
+```
+
+Match that hash to the line for the same file in `SHA256SUMS`. The checksum and the attestation show that the file is the one this workflow built. Use the file name from the release if the version in the example has moved on.
 
 ## Contributing
 

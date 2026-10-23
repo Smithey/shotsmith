@@ -4,7 +4,7 @@ The README is the short version. This is the same plan with a bit more detail.
 
 ## v0.1, now
 
-Mac menu bar app on macOS 14 and newer.
+Mac menu bar app on macOS 14 and newer. Releases also include a Windows 11 64-bit installer.
 
 Region, window, full screen, repeat last region, loupe, and a timer. The donut after a capture. The editor, including crop and shapes you can edit again later. Obfuscate by hand. Presets, clipboard, and save. History, with thumbnails that follow edits. Pins. Settings, including recorded shortcuts. Onboarding for Screen Recording and Accessibility. More than one editor window.
 
@@ -14,7 +14,7 @@ Copy text from a capture, and from the screen. Scrolling capture. Effects, share
 
 ## v1.0
 
-Plugin destinations, localisation, an opt-in updater, Homebrew and winget, a Windows build, and an accessibility pass.
+Plugin destinations, localisation, an opt-in updater, Homebrew and winget, a signed Windows installer, and an accessibility pass.
 
 ## Pro
 
