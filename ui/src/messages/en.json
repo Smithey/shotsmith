@@ -1,0 +1,15 @@
+{
+  "automation.title": "Automation",
+  "automation.command": "The shotsmith command can capture a screen, read text, list presets, and watch a folder.",
+  "automation.link": "A shotsmith:// link starts a capture. shotsmith://capture/region, shotsmith://capture/text, and shotsmith://capture/scroll are the ones to use.",
+  "automation.watch": "Watch folders",
+  "automation.add": "Add folder",
+  "automation.shortcuts": "Apple Shortcuts can open shotsmith://capture/region. The command and the link work on Windows too. This row does not.",
+  "plugins.title": "Plugins",
+  "plugins.off": "Plugins are off. Each one runs outside Shotsmith and says what it uploads.",
+  "plugins.enable": "Allow plugins",
+  "plugins.empty": "Put a JSON file in the Plugins folder. It needs id, name, command, and uploads.",
+  "updates.check": "Check for updates",
+  "updates.button": "Check now",
+  "language.label": "Language"
+}

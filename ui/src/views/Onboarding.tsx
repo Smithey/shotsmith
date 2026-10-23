@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, type Settings } from "../api";
+import { isMac, menuHint } from "../keys";
 
-const SHORTCUTS = [
-  ["Region", "⌘⇧2"],
-  ["Repeat last region", "⌘⇧1"],
-  ["Window", "⌥⌘⇧2"],
-  ["Full screen", "⌃⌘⇧2"],
-];
+const MAC = isMac();
 
 const AFTER = [
   ["donut", "Show the donut", "The action wheel opens at the cursor."],
@@ -30,13 +26,19 @@ function Permit({ title, detail, on, busy, onAllow }: { title: string; detail: s
 }
 
 export function Onboarding() {
-  const [step, setStep] = useState(0);
-  const [screen, setScreen] = useState<boolean | null>(null);
-  const [access, setAccess] = useState<boolean | null>(null);
+  const [step, setStep] = useState(MAC ? 0 : 1);
+  const [screen, setScreen] = useState<boolean | null>(MAC ? null : true);
+  const [access, setAccess] = useState<boolean | null>(MAC ? null : true);
   const [after, setAfter] = useState("donut");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [shortcuts, setShortcuts] = useState<Settings["shortcuts"] | null>(null);
   const hold = useRef(false);
+  const steps = MAC ? [0, 1, 2] : [1, 2];
+
+  useEffect(() => {
+    api.settings().then((next) => setShortcuts(next.shortcuts)).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (step !== 0) return;
@@ -87,8 +89,8 @@ export function Onboarding() {
 
   return (
     <div className="pane sheet">
-      <div className="steps">{[0, 1, 2].map((item) => <span key={item} className={item <= step ? "on" : ""} />)}</div>
-      {step === 0 && (
+      <div className="steps">{steps.map((item) => <span key={item} className={item <= step ? "on" : ""} />)}</div>
+      {MAC && step === 0 && (
         <>
           <p className="eyebrow">Step 1 of 3</p>
           <h1>Allow Shotsmith</h1>
@@ -118,24 +120,35 @@ export function Onboarding() {
       )}
       {step === 1 && (
         <>
-          <p className="eyebrow">Step 2 of 3</p>
+          <p className="eyebrow">{MAC ? "Step 2 of 3" : "Step 1 of 2"}</p>
           <h1>Shortcuts</h1>
           <p>These are on by default. Change any of them later in Settings.</p>
           <dl className="keys">
-            {SHORTCUTS.map(([name, keys]) => (
+            {(
+              [
+                ["Region", shortcuts?.region],
+                ["Repeat last region", shortcuts?.repeatLast],
+                ["Window", shortcuts?.window],
+                ["Full screen", shortcuts?.fullScreen],
+              ] as Array<[string, string | undefined]>
+            ).map(([name, keys]) => (
               <div key={name}>
                 <dt>{name}</dt>
-                <dd>{keys}</dd>
+                <dd>{menuHint(keys) || "..."}</dd>
               </div>
             ))}
           </dl>
-          <p>If nothing happens, macOS is still using those keys for its own screenshots. Turn those off under Keyboard Shortcuts, Screenshots.</p>
+          {MAC ? (
+            <p>If nothing happens, macOS is still using those keys for its own screenshots. Turn those off under Keyboard Shortcuts, Screenshots.</p>
+          ) : (
+            <p>If nothing happens, Windows may still be using those keys for Snipping Tool. Turn that off under Settings, Keyboard.</p>
+          )}
           <button className="secondary" onClick={() => api.openKeyboardSettings()}>Open Keyboard settings</button>
         </>
       )}
       {step === 2 && (
         <>
-          <p className="eyebrow">Step 3 of 3</p>
+          <p className="eyebrow">{MAC ? "Step 3 of 3" : "Step 2 of 2"}</p>
           <h1>After capture</h1>
           <p>Release the mouse to capture a region. Click a window to capture that window.</p>
           <div className="choices">
@@ -149,7 +162,7 @@ export function Onboarding() {
         </>
       )}
       <div className="row" style={{ marginTop: 18 }}>
-        {step > 0 && <button className="secondary" onClick={() => { hold.current = true; setStep(step - 1); }}>Back</button>}
+        {step > (MAC ? 0 : 1) && <button className="secondary" onClick={() => { hold.current = true; setStep(step - 1); }}>Back</button>}
         {step < 2 && (
           <button className="primary" disabled={step === 0 && !ready} onClick={() => setStep(step + 1)}>
             Continue

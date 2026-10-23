@@ -8,6 +8,8 @@ members = [
   "crates/history",
   "crates/output",
   "crates/extensions",
+  "crates/ocr",
+  "crates/cli",
   "app/src-tauri",
 ]
 exclude = ["shotsmith-pro"]
@@ -33,6 +35,7 @@ shotsmith-platform = { path = "crates/platform" }
 shotsmith-history = { path = "crates/history" }
 shotsmith-output = { path = "crates/output" }
 shotsmith-extensions = { path = "crates/extensions" }
+shotsmith-ocr = { path = "crates/ocr" }
 
 [profile.release]
 codegen-units = 1

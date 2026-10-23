@@ -1,4 +1,6 @@
 mod commands;
+mod destinations;
+mod features;
 mod state;
 mod windows;
 
@@ -12,7 +14,6 @@ use tauri::{
     tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -25,8 +26,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .enable_macos_default_menu(false)
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            windows::reveal_documents(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !features::dispatch_args(app, &args) {
+                windows::reveal_documents(app);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -55,6 +58,7 @@ pub fn run() {
             donut: Mutex::new(None),
             hud: Mutex::new(None),
             capture_mode: Mutex::new("region".into()),
+            open_in_id: Mutex::new(None),
         })
         .setup(|app| {
             if let Some(dir) = app.path().app_data_dir().ok() {
@@ -72,6 +76,9 @@ pub fn run() {
                 let _ = windows::open_view(app.handle(), "onboarding", "onboarding", "Welcome to Shotsmith", 180.0, 80.0, 520.0, 680.0, true, false);
             }
             windows::sync_dock(app.handle());
+            features::spawn_watch(app.handle().clone());
+            let args: Vec<String> = std::env::args().collect();
+            let _ = features::dispatch_args(app.handle(), &args);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -129,6 +136,21 @@ pub fn run() {
             commands::open_keyboard_settings,
             commands::relaunch,
             commands::feature_notice,
+            features::editor_text,
+            features::editor_secrets,
+            features::editor_dismiss_secret,
+            features::editor_redact,
+            features::editor_share,
+            features::editor_print,
+            features::editor_beautify,
+            features::apps_list,
+            features::open_in_state,
+            features::open_in_choose,
+            features::measure_at,
+            features::lookup_text,
+            features::plugins_list,
+            features::editor_plugin,
+            features::updates_check,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Shotsmith")
@@ -230,32 +252,69 @@ pub fn set_tray_capturing(app: &tauri::AppHandle, active: bool) {
 }
 
 pub fn rebuild_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let _ = app.set_menu(build_menu_bar(app)?);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_menu(build_menu_bar(app)?);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app.remove_menu();
+        if let Some(tray) = app.tray_by_id("shotsmith") {
+            let _ = tray.set_menu(Some(build_tray_menu(app)?));
+            return Ok(());
+        }
+    }
     if app.tray_by_id("shotsmith").is_some() {
         return Ok(());
     }
     let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))?;
-    let handle = app.clone();
-    TrayIconBuilder::with_id("shotsmith")
+    let mut builder = TrayIconBuilder::with_id("shotsmith")
         .icon(icon)
         .icon_as_template(true)
         .tooltip("Shotsmith")
-        .on_tray_icon_event(move |_tray, event| {
+        .on_menu_event(|app, event| {
+            let _ = on_menu(app, event.id.as_ref());
+        });
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.clone();
+        builder = builder.on_tray_icon_event(move |_tray, event| {
             if let TrayIconEvent::Click { button_state, rect, .. } = event {
                 if button_state == MouseButtonState::Down {
                     windows::toggle_status_menu(&handle, rect);
                 }
             }
-        })
-        .on_menu_event(|app, event| {
-            let _ = on_menu(app, event.id.as_ref());
-        })
-        .build(app)?;
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let tray_menu = build_tray_menu(app)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.menu(&tray_menu).show_menu_on_left_click(true);
+    }
+    builder.build(app)?;
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
+fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    append_capture(&menu, app, true)?;
+    Ok(menu)
+}
+
+fn chord(tail: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("Cmd+{tail}")
+    } else {
+        format!("Ctrl+{tail}")
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn build_menu_bar(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let settings_item = action(app, "settings", "Settings…", Some("Cmd+,"))?;
+    let settings_accel = chord(",");
+    let settings_item = action(app, "settings", "Settings…", Some(&settings_accel))?;
     let capture = Submenu::with_id(app, "capture-menu", "Capture", true)?;
     append_capture(&capture, app, false)?;
     let window_menu = Submenu::with_id(app, "window-menu", "Window", true)?;
@@ -291,17 +350,20 @@ fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_co
     let repeat = action(app, "capture-repeat", "Repeat last region", some_accel(&repeat_accel))?;
     let window = action(app, "capture-window", "Window", some_accel(&window_accel))?;
     let screen = action(app, "capture-screen", "Full screen", some_accel(&screen_accel))?;
-    let scrolling = later(app, "capture-scroll", "Scrolling…")?;
+    let scrolling = action(app, "capture-scroll", "Scrolling…", None)?;
     let timed_3 = action(app, "timed-3", "3 seconds", None)?;
     let timed_5 = action(app, "timed-5", "5 seconds", None)?;
     let timed_10 = action(app, "timed-10", "10 seconds", None)?;
     let timed = Submenu::with_items(app, "Timed", true, &[&timed_3, &timed_5, &timed_10])?;
-    let copy_text = later(app, "capture-text", "Copy text from screen")?;
+    let copy_text = action(app, "capture-text", "Copy text from screen", None)?;
+    let measure = action(app, "capture-measure", "Measure", None)?;
     let sep_recent = PredefinedMenuItem::separator(app)?;
     let history = action(app, "history", "Show History", some_accel(&history_accel))?;
     let sep_file = PredefinedMenuItem::separator(app)?;
-    let open_image = action(app, "open-image", "Open image…", Some("Cmd+O"))?;
-    let clipboard = action(app, "clipboard", "Edit image from clipboard", Some("Cmd+Shift+V"))?;
+    let open_accel = chord("O");
+    let clip_accel = chord("Shift+V");
+    let open_image = action(app, "open-image", "Open image…", Some(&open_accel))?;
+    let clipboard = action(app, "clipboard", "Edit image from clipboard", Some(&clip_accel))?;
     let pinned = pinned_menu(app)?;
     menu.append(&region)?;
     menu.append(&repeat)?;
@@ -310,6 +372,7 @@ fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_co
     menu.append(&scrolling)?;
     menu.append(&timed)?;
     menu.append(&copy_text)?;
+    menu.append(&measure)?;
     menu.append(&sep_recent)?;
     menu.append(&history)?;
     menu.append(&sep_file)?;
@@ -318,8 +381,10 @@ fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_co
     menu.append(&pinned)?;
     if include_app_commands {
         let sep = PredefinedMenuItem::separator(app)?;
-        let settings_item = action(app, "settings", "Settings…", Some("Cmd+,"))?;
-        let quit = action(app, "quit", "Quit Shotsmith", Some("Cmd+Q"))?;
+        let settings_accel = chord(",");
+        let quit_accel = chord("Q");
+        let settings_item = action(app, "settings", "Settings…", Some(&settings_accel))?;
+        let quit = action(app, "quit", "Quit Shotsmith", Some(&quit_accel))?;
         menu.append(&sep)?;
         menu.append(&settings_item)?;
         menu.append(&quit)?;
@@ -345,10 +410,6 @@ impl AppendMenu for Submenu<tauri::Wry> {
 
 fn action(app: &tauri::AppHandle, id: &str, label: &str, accelerator: Option<&str>) -> tauri::Result<MenuItem<tauri::Wry>> {
     MenuItem::with_id(app, id, label, true, accelerator)
-}
-
-fn later(app: &tauri::AppHandle, id: &str, label: &str) -> tauri::Result<MenuItem<tauri::Wry>> {
-    MenuItem::with_id(app, id, format!("{label}    Coming soon"), false, None::<&str>)
 }
 
 fn some_accel(value: &str) -> Option<&str> {
@@ -378,8 +439,10 @@ fn pinned_menu(app: &tauri::AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
 fn on_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     // The menu item runs before AppKit dismisses the menu. Capturing now
     // freezes the open menu into the picture. Let it close first.
-    let delayed = matches!(id, "capture-region" | "capture-window" | "capture-screen" | "capture-repeat")
-        || id.starts_with("timed-");
+    let delayed = matches!(
+        id,
+        "capture-region" | "capture-window" | "capture-screen" | "capture-repeat" | "capture-scroll" | "capture-text" | "capture-measure"
+    ) || id.starts_with("timed-");
     if delayed {
         let app = app.clone();
         let id = id.to_string();
@@ -404,18 +467,9 @@ fn run_menu(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
         "capture-repeat" => {
             commands::capture_repeat(app.clone(), state)?;
         }
-        "capture-scroll" => {
-            app.dialog()
-                .message("Scrolling capture is not in this version yet.")
-                .kind(MessageDialogKind::Info)
-                .show(|_| {});
-        }
-        "capture-text" => {
-            app.dialog()
-                .message("Copy text from the screen is not in this version yet.")
-                .kind(MessageDialogKind::Info)
-                .show(|_| {});
-        }
+        "capture-scroll" => commands::capture_begin(app.clone(), state, "scroll".into())?,
+        "capture-text" => commands::capture_begin(app.clone(), state, "text".into())?,
+        "capture-measure" => commands::capture_begin(app.clone(), state, "measure".into())?,
         "timed-3" | "timed-5" | "timed-10" => {
             if let Ok(seconds) = id.trim_start_matches("timed-").parse::<u32>() {
                 if let Ok(mut settings) = state.settings.lock() {

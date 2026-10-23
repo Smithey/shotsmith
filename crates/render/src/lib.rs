@@ -2,7 +2,7 @@ use ab_glyph::{Font, FontRef, PxScale, point};
 use base64::Engine;
 use image::{Rgba, RgbaImage};
 use shotsmith_core::{
-    AnnotationObject, ArrowHeads, CounterStyle, Document, Effect, HighlightMode, ObfuscateMode,
+    AnnotationObject, ArrowHeads, CounterStyle, Document, Effect, HighlightMode, MagnifyObject, ObfuscateMode,
 };
 use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform,
@@ -10,8 +10,9 @@ use tiny_skia::{
 
 pub fn render(image: &RgbaImage, doc: &Document, effects: &[Effect]) -> RgbaImage {
     let mut pixmap = image_to_pixmap(image);
+    let base = pixmap.clone();
     for object in &doc.objects {
-        draw_object(&mut pixmap, object);
+        draw_object(&mut pixmap, &base, object);
     }
     apply_effects(&mut pixmap, effects);
     pixmap_to_image(&pixmap)
@@ -25,7 +26,7 @@ pub fn crop_image(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> RgbaImag
     image::imageops::crop_imm(image, x, y, w, h).to_image()
 }
 
-fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
+fn draw_object(pixmap: &mut Pixmap, base: &Pixmap, object: &AnnotationObject) {
     match object {
         AnnotationObject::Rect(o) => {
             shadow_rect(pixmap, o.x, o.y, o.w, o.h, o.radius, shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity));
@@ -121,7 +122,48 @@ fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
         AnnotationObject::Highlight(o) => draw_highlight(pixmap, o),
         AnnotationObject::Obfuscate(o) => draw_obfuscate(pixmap, o),
         AnnotationObject::Image(o) | AnnotationObject::Cursor(o) => draw_embedded(pixmap, o),
+        AnnotationObject::Magnify(o) => draw_magnify(pixmap, base, o),
     }
+}
+
+fn draw_magnify(pixmap: &mut Pixmap, base: &Pixmap, object: &MagnifyObject) {
+    let radius = (object.w.abs().min(object.h.abs()) / 2.0).max(8.0);
+    let cx = object.x + object.w / 2.0;
+    let cy = object.y + object.h / 2.0;
+    let factor = object.factor.clamp(2.0, 4.0);
+    let r = radius.round() as i32;
+    let width = pixmap.width() as i32;
+    let height = pixmap.height() as i32;
+    let stride = pixmap.width();
+    let bw = base.width() as i32;
+    let bh = base.height() as i32;
+    let bstride = base.width();
+    let base_px = base.pixels();
+    {
+        let dest = pixmap.pixels_mut();
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy > r * r {
+                    continue;
+                }
+                let dst_x = (cx.round() as i32) + dx;
+                let dst_y = (cy.round() as i32) + dy;
+                if dst_x < 0 || dst_y < 0 || dst_x >= width || dst_y >= height {
+                    continue;
+                }
+                let sx = (cx + dx as f32 / factor).round() as i32;
+                let sy = (cy + dy as f32 / factor).round() as i32;
+                if sx < 0 || sy < 0 || sx >= bw || sy >= bh {
+                    continue;
+                }
+                let pixel = base_px[(sy as u32 * bstride + sx as u32) as usize];
+                dest[(dst_y as u32 * stride + dst_x as u32) as usize] = pixel;
+            }
+        }
+    }
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(255, 255, 255, 230);
+    stroke_oval(pixmap, cx - radius, cy - radius, radius * 2.0, radius * 2.0, 2.0, &paint);
 }
 
 fn draw_highlight(pixmap: &mut Pixmap, o: &shotsmith_core::HighlightObject) {
@@ -842,6 +884,123 @@ pub fn cursor_png() -> String {
     let mut bytes = Vec::new();
     let _ = image.write_with_encoder(image::codecs::png::PngEncoder::new(&mut bytes));
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[derive(Clone, Debug)]
+pub struct BeautifyOptions {
+    pub scale: f32,
+    pub backdrop: String,
+    pub padding: f32,
+    pub radius: f32,
+    pub shadow: bool,
+    pub frame: bool,
+    pub watermark: String,
+}
+
+pub fn beautify(image: &RgbaImage, options: &BeautifyOptions) -> RgbaImage {
+    let scale = options.scale.clamp(0.25, 2.0);
+    let pad = options.padding.clamp(0.0, 240.0);
+    let radius = options.radius.clamp(0.0, 80.0);
+    let scaled = if (scale - 1.0).abs() < 0.01 {
+        image.clone()
+    } else {
+        let width = ((image.width() as f32) * scale).round().max(1.0) as u32;
+        let height = ((image.height() as f32) * scale).round().max(1.0) as u32;
+        image::imageops::resize(image, width, height, image::imageops::FilterType::Triangle)
+    };
+    let watermark = options.watermark.trim();
+    let caption = if watermark.is_empty() { 0.0 } else { 32.0 };
+    let width = (scaled.width() as f32 + pad * 2.0).round().max(1.0) as u32;
+    let height = (scaled.height() as f32 + pad * 2.0 + caption).round().max(1.0) as u32;
+    let mut pixmap = Pixmap::new(width, height).unwrap_or_else(|| Pixmap::new(1, 1).expect("pixmap"));
+    let [r, g, b] = hex_rgb(&options.backdrop);
+    pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
+    let x = pad;
+    let y = pad;
+    let w = scaled.width() as f32;
+    let h = scaled.height() as f32;
+    if options.shadow {
+        let paint = paint_hex("#000000", 0.28);
+        fill_round(&mut pixmap, x + 0.0, y + 8.0, w, h, radius, &paint);
+    }
+    let photo = image_to_pixmap(&scaled);
+    pixmap.draw_pixmap(
+        x.round() as i32,
+        y.round() as i32,
+        photo.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    if options.frame {
+        let paint = paint_hex("#000000", 0.18);
+        stroke_round(&mut pixmap, x, y, w, h, radius, 2.0, &paint);
+    }
+    if !watermark.is_empty() {
+        draw_text(
+            &mut pixmap,
+            &shotsmith_core::TextObject {
+                id: "watermark".into(),
+                x: pad,
+                y: pad + h + 6.0,
+                text: watermark.to_string(),
+                size: 14.0,
+                color: "#3A3A3C".into(),
+                fill: "none".into(),
+                bold: false,
+            },
+        );
+    }
+    let mut image = pixmap_to_image(&pixmap);
+    if radius > 0.0 {
+        mask_radius(&mut image, x, y, w, h, radius, r, g, b);
+    }
+    image
+}
+
+fn hex_rgb(hex: &str) -> [u8; 3] {
+    let hex = hex.trim().trim_start_matches('#');
+    let Ok(value) = u32::from_str_radix(hex, 16) else {
+        return [255, 255, 255];
+    };
+    if hex.len() == 6 {
+        [(value >> 16) as u8, (value >> 8) as u8, value as u8]
+    } else {
+        [255, 255, 255]
+    }
+}
+
+fn mask_radius(image: &mut RgbaImage, x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b: u8) {
+    let radius = radius.min(w / 2.0).min(h / 2.0);
+    let left = x.round() as i32;
+    let top = y.round() as i32;
+    let right = (x + w).round() as i32;
+    let bottom = (y + h).round() as i32;
+    for py in top..bottom {
+        for px in left..right {
+            if px < 0 || py < 0 || px as u32 >= image.width() || py as u32 >= image.height() {
+                continue;
+            }
+            let dx = if (px as f32) < x + radius {
+                x + radius - px as f32
+            } else if (px as f32) > x + w - radius {
+                px as f32 - (x + w - radius)
+            } else {
+                0.0
+            };
+            let dy = if (py as f32) < y + radius {
+                y + radius - py as f32
+            } else if (py as f32) > y + h - radius {
+                py as f32 - (y + h - radius)
+            } else {
+                0.0
+            };
+            if dx * dx + dy * dy <= radius * radius {
+                continue;
+            }
+            image.put_pixel(px as u32, py as u32, Rgba([r, g, b, 255]));
+        }
+    }
 }
 
 #[cfg(test)]

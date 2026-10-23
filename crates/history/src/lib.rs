@@ -29,6 +29,8 @@ pub struct CaptureRecord {
     pub original_path: String,
     pub document_path: Option<String>,
     pub pinned: bool,
+    #[serde(default)]
+    pub ocr_text: Option<String>,
     /// Flattened thumbnail written beside the original. Not stored in the database.
     #[serde(default)]
     pub preview_path: Option<String>,
@@ -61,14 +63,15 @@ impl HistoryDb {
                 pinned INTEGER NOT NULL DEFAULT 0
             );",
         )?;
+        let _ = conn.execute("ALTER TABLE captures ADD COLUMN ocr_text TEXT", []);
         Ok(Self { conn })
     }
 
     pub fn insert(&self, record: &CaptureRecord) -> Result<(), HistoryError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO captures
-            (id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            (id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 record.id,
                 record.date,
@@ -81,6 +84,7 @@ impl HistoryDb {
                 record.original_path,
                 record.document_path,
                 record.pinned as i32,
+                record.ocr_text,
             ],
         )?;
         Ok(())
@@ -88,7 +92,7 @@ impl HistoryDb {
 
     pub fn list(&self, limit: u32) -> Result<Vec<CaptureRecord>, HistoryError> {
         self.query(
-            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
              FROM captures ORDER BY date DESC LIMIT ?1",
             [limit],
         )
@@ -97,9 +101,9 @@ impl HistoryDb {
     pub fn search(&self, query: &str) -> Result<Vec<CaptureRecord>, HistoryError> {
         let like = format!("%{}%", query.replace('%', ""));
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
              FROM captures
-             WHERE source_app LIKE ?1 OR window_title LIKE ?1 OR date LIKE ?1
+             WHERE source_app LIKE ?1 OR window_title LIKE ?1 OR date LIKE ?1 OR ocr_text LIKE ?1
              ORDER BY date DESC LIMIT 200",
         )?;
         let rows = stmt.query_map(params![like], row_to_record)?;
@@ -108,7 +112,7 @@ impl HistoryDb {
 
     pub fn get(&self, id: &str) -> Result<Option<CaptureRecord>, HistoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
              FROM captures WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![id])?;
@@ -133,6 +137,14 @@ impl HistoryDb {
         Ok(())
     }
 
+    pub fn set_ocr(&self, id: &str, text: &str) -> Result<(), HistoryError> {
+        self.conn.execute(
+            "UPDATE captures SET ocr_text = ?1 WHERE id = ?2",
+            params![text, id],
+        )?;
+        Ok(())
+    }
+
     pub fn set_document(&self, id: &str, path: &str) -> Result<(), HistoryError> {
         self.conn.execute(
             "UPDATE captures SET document_path = ?1 WHERE id = ?2",
@@ -145,7 +157,7 @@ impl HistoryDb {
         let mut doomed = Vec::new();
         if keep > 0 {
             let extra = self.query(
-                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned
+                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
                  FROM captures WHERE pinned = 0 ORDER BY date DESC LIMIT -1 OFFSET ?1",
                 [keep],
             )?;
@@ -153,7 +165,7 @@ impl HistoryDb {
         }
         if days > 0 {
             let old = self.conn.prepare(
-                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned
+                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
                  FROM captures WHERE pinned = 0 AND julianday(date) < julianday('now') - ?1",
             );
             if let Ok(mut stmt) = old {
@@ -191,6 +203,7 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureRecord> {
         original_path: row.get(8)?,
         document_path: row.get(9)?,
         pinned: row.get::<_, i32>(10)? != 0,
+        ocr_text: row.get(11)?,
         preview_path: None,
         preview_rev: 0,
     })
@@ -226,6 +239,7 @@ mod tests {
             original_path: format!("/tmp/{id}.png"),
             document_path: None,
             pinned: false,
+            ocr_text: None,
             preview_path: None,
             preview_rev: 0,
         }

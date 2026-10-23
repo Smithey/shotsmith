@@ -4,17 +4,15 @@ The README is the short version. This is the same plan with a bit more detail.
 
 ## v0.1, now
 
-Mac menu bar app on macOS 14 and newer. Releases also include a Windows 11 64-bit installer.
+Mac menu bar app on macOS 14 and newer. Releases also include a Windows 11 64-bit installer. The Windows build uses a tray menu, a native title bar, File Explorer, and the Windows share and print windows.
 
-Region, window, full screen, repeat last region, loupe, and a timer. The donut after a capture. The editor, including crop and shapes you can edit again later. Obfuscate by hand. Presets, clipboard, and save. History, with thumbnails that follow edits. Pins. Settings, including recorded shortcuts. Onboarding for Screen Recording and Accessibility. More than one editor window.
+Region, window, full screen, scrolling, repeat last region, loupe, timer, and measure. Copy text from the screen and from a capture. The donut after a capture, or a normal menu when VoiceOver or Narrator is on. The editor, including crop, magnify, an eyedropper, and shapes you can edit again later. Selectable text, and Look Up on Mac. Obfuscate by hand, plus a manual secret scan. Beautify. Presets, clipboard, save, share, print, and Open in. History, with thumbnails that follow edits and search across recognized text. Pins. Settings, including recorded shortcuts, watch folders, plugins that stay off, and an update check that stays off. Onboarding. More than one editor window.
+
+The `shotsmith` command, `shotsmith://` links, and Apple Shortcuts on Mac are in this tree. Homebrew and winget manifests are in `packaging/`. The Windows installer is Authenticode signed when the signing secret is set.
 
 ## Next
 
-Copy text from a capture, and from the screen. Scrolling capture. Effects, share, print, and Open in. Beautify and measure. A `shotsmith` command, a `shotsmith://` link, watch folders, and Apple Shortcuts.
-
-## v1.0
-
-Plugin destinations, localisation, an opt-in updater, Homebrew and winget, a signed Windows installer, and an accessibility pass.
+Nothing queued ahead of Pro. HEIC export stays off until both platforms can encode it.
 
 ## Pro
 

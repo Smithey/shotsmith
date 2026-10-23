@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { api, onRefresh, uid, SWATCHES, type AnnotationObject, type Document, type EditorState, type Preset } from "../api";
+import { api, onRefresh, uid, SWATCHES, type AnnotationObject, type Document, type EditorState, type Preset, type SecretFinding, type TextLine } from "../api";
 import type { Effect } from "../bindings/Effect";
+import { isMac } from "../keys";
 import { bounds, drawCrop, drawDocument, hitCenter, hitHandle, hitsBox, hitTest, idOf, whenBitmapsLoad, type Handle } from "./draw";
 
 type Tool = "select" | "crop" | "arrow" | "rect" | "ellipse" | "line" | "freehand" | "text" | "callout" | "counter" | "highlight" | "obfuscate" | "magnify" | "eyedropper";
@@ -21,7 +22,7 @@ const KEYS: Record<string, Tool> = {
 const TOOL_LABEL: Record<Tool, string> = {
   select: "Select", crop: "Crop", arrow: "Arrow", rect: "Rectangle", ellipse: "Ellipse", line: "Line", freehand: "Freehand", text: "Text", callout: "Text", counter: "Step counter", highlight: "Highlight", obfuscate: "Obfuscate", magnify: "Magnify", eyedropper: "Eyedropper",
 };
-const LATER = new Set<Tool>(["magnify", "eyedropper"]);
+const LATER = new Set<Tool>([]);
 const SHADOW = { shadowBlur: 8, shadowX: 0, shadowY: 3, shadowOpacity: 0.35 };
 
 export function Editor() {
@@ -50,6 +51,14 @@ export function Editor() {
   const [imageRev, setImageRev] = useState(0);
   const [error, setError] = useState("");
   const [askClose, setAskClose] = useState(false);
+  const [textLines, setTextLines] = useState<TextLine[]>([]);
+  const [pickedLine, setPickedLine] = useState<number | null>(null);
+  const [findings, setFindings] = useState<SecretFinding[]>([]);
+  const [panel, setPanel] = useState<"" | "text" | "secrets" | "beautify" | "print" | "open">("");
+  const [apps, setApps] = useState<Array<{ id: string; name: string }>>([]);
+  const [printFit, setPrintFit] = useState(true);
+  const [printRotate, setPrintRotate] = useState(false);
+  const [beauty, setBeauty] = useState({ scale: 1, backdrop: "#F2F2F7", padding: 32, radius: 12, shadow: true, frame: false, watermark: "" });
   const [saveMenu, setSaveMenu] = useState(false);
   const saveWrap = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -70,6 +79,8 @@ export function Editor() {
   const gesture = useRef(false);
   const arrowing = useRef(false);
   const view = useRef({ zoom, pan, selected, editing, cropBox, marquee, fast: false });
+  const textRef = useRef({ lines: textLines, picked: pickedLine, open: panel === "text" });
+  textRef.current = { lines: textLines, picked: pickedLine, open: panel === "text" };
   if (!gesture.current) docRef.current = doc;
   view.current = { ...view.current, zoom, pan, selected, editing, cropBox, marquee };
 
@@ -116,6 +127,18 @@ export function Editor() {
     const ready = image != null && image.complete && image.naturalWidth === document.width && image.naturalHeight === document.height;
     drawDocument(ctx, ready ? image : null, document, z, p.x, p.y, ids, editingId, fast);
     if (crop) drawCrop(ctx, document, crop, z, p.x, p.y);
+    const liveText = textRef.current;
+    if (liveText.open && liveText.lines.length) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.scale(z, z);
+      liveText.lines.forEach((line, index) => {
+        ctx.strokeStyle = index === liveText.picked ? "#0A84FF" : "rgba(10,132,255,0.45)";
+        ctx.lineWidth = 1 / z;
+        ctx.strokeRect(line.x, line.y, line.w, line.h);
+      });
+      ctx.restore();
+    }
     if (box) {
       ctx.save();
       ctx.translate(p.x, p.y);
@@ -168,7 +191,7 @@ export function Editor() {
   useEffect(() => {
     whenBitmapsLoad(() => paint());
     paint();
-  }, [doc, zoom, pan, selected, cropBox, marquee, editing, imageRev]);
+  }, [doc, zoom, pan, selected, cropBox, marquee, editing, imageRev, textLines, pickedLine, panel]);
 
   useEffect(() => {
     const object = doc?.objects.find((item) => item.id === selected[selected.length - 1]);
@@ -275,6 +298,13 @@ export function Editor() {
     if (!current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const p = localPoint(event);
+    if (textRef.current.open) {
+      const hit = textRef.current.lines.findIndex((line) => p.x >= line.x && p.y >= line.y && p.x <= line.x + line.w && p.y <= line.y + line.h);
+      if (hit >= 0) {
+        setPickedLine(hit);
+        return;
+      }
+    }
     if (tool === "crop") {
       setSelected([]);
       setCropBox(null);
@@ -333,7 +363,14 @@ export function Editor() {
       setTool("select");
       return;
     }
-    if (tool === "magnify" || tool === "eyedropper") return;
+    if (tool === "eyedropper") {
+      const hex = sampleHex(imageRef.current, p.x, p.y, current.width, current.height);
+      if (hex) {
+        setStroke(hex);
+        if (selected.length) commit(recolor(current, selected, hex));
+      }
+      return;
+    }
     if (tool === "counter") {
       const number = current.objects.reduce((max, object) => object.type === "counter" ? Math.max(max, object.number) : max, 0) + 1;
       const object: AnnotationObject = { type: "counter", id: uid(), x: p.x, y: p.y, number, style: "circle", fill: stroke, size: 28 };
@@ -495,7 +532,8 @@ export function Editor() {
   const showWeight = selectedObject ? "strokeWidth" in selectedObject : ["arrow", "rect", "ellipse", "line", "freehand"].includes(tool);
   const showObfuscate = selectedObject ? selectedObject.type === "obfuscate" : tool === "obfuscate";
   const showColor = selectedObject ? selectedObject.type !== "obfuscate" && colorOf(selectedObject) != null : ["arrow", "rect", "ellipse", "line", "freehand", "text", "callout", "counter", "highlight"].includes(tool);
-  const showShape = showColor || showText || showWeight || showFill || (selectedObject != null && "shadow" in selectedObject);
+  const showMagnify = selectedObject?.type === "magnify";
+  const showShape = showColor || showText || showWeight || showFill || showMagnify || (selectedObject != null && "shadow" in selectedObject);
   const showEffects = !selectedObject && tool === "select";
   const obfuscate = selectedObject?.type === "obfuscate" ? selectedObject : null;
   const obfuscateMode = obfuscate?.mode ?? coverMode;
@@ -565,6 +603,24 @@ export function Editor() {
     preview({ ...current, objects: current.objects.map((object) => object.type === "obfuscate" && object.id === obfuscate.id ? { ...object, blockSize: next } : object) }, obfuscate.mode !== "solid");
   }
 
+  function openPanel(next: "text" | "secrets" | "open") {
+    if (panel === next) {
+      setPanel("");
+      return;
+    }
+    setPanel(next);
+    if (next === "text") api.editorText().then(setTextLines).catch((err: Error) => setError(err.message));
+    if (next === "secrets") api.editorSecrets().then(setFindings).catch((err: Error) => setError(err.message));
+    if (next === "open") api.apps().then(setApps).catch((err: Error) => setError(err.message));
+  }
+
+  function copyLines(asCode: boolean) {
+    const chosen = pickedLine == null ? textLines : textLines.filter((_, index) => index === pickedLine);
+    const body = chosen.map((line) => line.text).join("\n");
+    const text = asCode ? "```\n" + body + "\n```" : body;
+    api.copyHex(text).catch((err: Error) => setError(err.message));
+  }
+
   function toggleEffect(effect: Effect) {
     if (!preset) return;
     const effects = preset.effects.includes(effect) ? preset.effects.filter((item) => item !== effect) : [...preset.effects, effect];
@@ -594,9 +650,12 @@ export function Editor() {
             <button type="button" className="ed-icon" aria-label="Redo" disabled={!state?.canRedo} onClick={() => api.redo().then(applyRemote)}><Icon name="redo" /></button>
           </span>
           <button type="button" className="ed-icon" data-tip="Copy" aria-label="Copy to clipboard" onClick={() => api.copyEditor().catch((err: Error) => setError(err.message))}><Icon name="copy" /></button>
-          <span className="ed-tip" data-tip="Share is not in this version yet">
-            <button type="button" className="ed-icon" aria-label="Share is not in this version yet" disabled><Icon name="share" /></button>
-          </span>
+          <button type="button" className="ed-icon" data-tip="Share" aria-label="Share" onClick={() => api.shareEditor().catch((err: Error) => setError(err.message))}><Icon name="share" /></button>
+          <button type="button" className={panel === "text" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("text")}>Text</button>
+          <button type="button" className={panel === "secrets" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("secrets")}>Secrets</button>
+          <button type="button" className={panel === "beautify" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => setPanel((current) => current === "beautify" ? "" : "beautify")}>Beautify</button>
+          <button type="button" className={panel === "print" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => setPanel((current) => current === "print" ? "" : "print")}>Print</button>
+          <button type="button" className={panel === "open" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("open")}>Open in</button>
           <div className="ed-save-wrap" ref={saveWrap}>
             <div className="ed-save">
               <button type="button" onClick={() => savePng()}>Save PNG</button>
@@ -660,8 +719,8 @@ export function Editor() {
             <span>{Math.round(zoom * 100)}%</span>
             <button type="button" data-tip="Zoom in" aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(8, z * 1.15))}>+</button>
             <span className="ed-gap" />
-            <button type="button" data-tip="Fit" onClick={() => setZoom(fit())}>Fit ⌘0</button>
-            <button type="button" data-tip="Actual size" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); }}>100% ⌘1</button>
+            <button type="button" data-tip="Fit" onClick={() => setZoom(fit())}>Fit {isMac() ? "⌘0" : "Ctrl+0"}</button>
+            <button type="button" data-tip="Actual size" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); }}>100% {isMac() ? "⌘1" : "Ctrl+1"}</button>
           </div>
         </div>
         <aside className="ed-inspector">
@@ -692,6 +751,13 @@ export function Editor() {
                 <div className="ed-line"><label htmlFor="ed-shadow-opacity">Opacity</label><input id="ed-shadow-opacity" type="range" min={0} max={100} value={shadowOpacity} onChange={(event) => { const next = Number(event.target.value); setShadowOpacity(next); paintShadow({ shadowOpacity: next / 100 }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowOpacity)}</span></div>
               </>
             )}
+            {selectedObject?.type === "magnify" && (
+              <div className="ed-line"><label htmlFor="ed-zoom-lens">Zoom</label><input id="ed-zoom-lens" type="range" min={2} max={4} step={1} value={selectedObject.factor} onChange={(event) => {
+                const factor = Number(event.target.value);
+                if (!doc || selectedObject.type !== "magnify") return;
+                commit({ ...doc, objects: doc.objects.map((object) => object.type === "magnify" && object.id === selectedObject.id ? { ...object, factor } : object) });
+              }} /><span>{selectedObject.factor}×</span></div>
+            )}
             {selectedObject?.type === "text" && (
               <textarea className="ed-text" value={selectedObject.text} onChange={(event) => doc && remember(updateText(doc, selectedObject.id, event.target.value))} onBlur={() => { const current = docRef.current; if (current) commit(current); }} />
             )}
@@ -715,6 +781,11 @@ export function Editor() {
               <label key={effect} className="ed-check">{label} <input type="checkbox" checked={preset?.effects.includes(effect) ?? false} onChange={() => toggleEffect(effect)} /></label>
             ))}
           </div>}
+          {panel === "text" && <TextPanel lines={textLines} picked={pickedLine} onPick={setPickedLine} onCopy={(asCode) => copyLines(asCode)} />}
+          {panel === "secrets" && <SecretsPanel findings={findings} onDismiss={(id) => api.dismissSecret(id).then(setFindings).catch((err: Error) => setError(err.message))} onRedact={() => api.redactSecrets().then(applyRemote).then(() => api.editorSecrets().then(setFindings)).catch((err: Error) => setError(err.message))} />}
+          {panel === "beautify" && <BeautifyPanel value={beauty} setValue={setBeauty} onApply={() => api.beautify(beauty).then(applyRemote).catch((err: Error) => setError(err.message))} />}
+          {panel === "print" && <PrintPanel fit={printFit} rotate={printRotate} setFit={setPrintFit} setRotate={setPrintRotate} onPrint={() => api.printEditor(printFit, printRotate).catch((err: Error) => setError(err.message))} />}
+          {panel === "open" && <OpenPanel apps={apps} onOpen={(id) => api.openInChoose(id, state?.captureId ?? null).catch((err: Error) => setError(err.message))} />}
           {error && <p className="error">{error}</p>}
         </aside>
       </div>
@@ -740,6 +811,80 @@ export function Editor() {
   );
 }
 
+function TextPanel({ lines, picked, onPick, onCopy }: { lines: TextLine[]; picked: number | null; onPick: (index: number) => void; onCopy: (asCode: boolean) => void }) {
+  const selected = picked == null ? "" : lines[picked]?.text ?? "";
+  return (
+    <div className="ed-block">
+      <span className="ed-kicker">Text</span>
+      {lines.length === 0 && <p>No text was found.</p>}
+      <div className="text-list">
+        {lines.map((line, index) => (
+          <button key={`${line.x}-${line.y}-${index}`} type="button" className={index === picked ? "on" : ""} onClick={() => onPick(index)}>{line.text}</button>
+        ))}
+      </div>
+      <div className="row">
+        <button type="button" onClick={() => onCopy(false)}>Copy</button>
+        <button type="button" onClick={() => onCopy(true)}>Copy as code</button>
+        {isMac() && <button type="button" onClick={() => api.lookup(selected || lines.map((line) => line.text).join(" ")).catch(() => undefined)}>Look up</button>}
+      </div>
+    </div>
+  );
+}
+
+function SecretsPanel({ findings, onDismiss, onRedact }: { findings: SecretFinding[]; onDismiss: (id: string) => void; onRedact: () => void }) {
+  return (
+    <div className="ed-block">
+      <span className="ed-kicker">Secrets</span>
+      {findings.length === 0 && <p>No emails, keys, or card numbers found.</p>}
+      {findings.map((finding) => (
+        <div key={finding.id} className="secret-row">
+          <span>{finding.kind} · {finding.preview}</span>
+          <button type="button" onClick={() => onDismiss(finding.id)}>Dismiss</button>
+        </div>
+      ))}
+      {findings.length > 0 && <button type="button" onClick={onRedact}>Redact remaining</button>}
+    </div>
+  );
+}
+
+function BeautifyPanel({ value, setValue, onApply }: { value: { scale: number; backdrop: string; padding: number; radius: number; shadow: boolean; frame: boolean; watermark: string }; setValue: (next: typeof value) => void; onApply: () => void }) {
+  return (
+    <div className="ed-block">
+      <span className="ed-kicker">Beautify</span>
+      <div className="ed-line"><label htmlFor="beauty-scale">Size</label><input id="beauty-scale" type="range" min={0.5} max={2} step={0.1} value={value.scale} onChange={(event) => setValue({ ...value, scale: Number(event.target.value) })} /><span>{value.scale.toFixed(1)}×</span></div>
+      <div className="ed-line"><label htmlFor="beauty-pad">Padding</label><input id="beauty-pad" type="range" min={0} max={96} value={value.padding} onChange={(event) => setValue({ ...value, padding: Number(event.target.value) })} /><span>{value.padding}</span></div>
+      <div className="ed-line"><label htmlFor="beauty-radius">Radius</label><input id="beauty-radius" type="range" min={0} max={48} value={value.radius} onChange={(event) => setValue({ ...value, radius: Number(event.target.value) })} /><span>{value.radius}</span></div>
+      <div className="ed-line"><label htmlFor="beauty-back">Backdrop</label><input id="beauty-back" value={value.backdrop} onChange={(event) => setValue({ ...value, backdrop: event.target.value })} /></div>
+      <label className="ed-check">Shadow <input type="checkbox" checked={value.shadow} onChange={(event) => setValue({ ...value, shadow: event.target.checked })} /></label>
+      <label className="ed-check">Frame <input type="checkbox" checked={value.frame} onChange={(event) => setValue({ ...value, frame: event.target.checked })} /></label>
+      <div className="ed-line"><label htmlFor="beauty-mark">Watermark</label><input id="beauty-mark" value={value.watermark} onChange={(event) => setValue({ ...value, watermark: event.target.value })} /></div>
+      <button type="button" onClick={onApply}>Apply</button>
+    </div>
+  );
+}
+
+function PrintPanel({ fit, rotate, setFit, setRotate, onPrint }: { fit: boolean; rotate: boolean; setFit: (value: boolean) => void; setRotate: (value: boolean) => void; onPrint: () => void }) {
+  return (
+    <div className="ed-block">
+      <span className="ed-kicker">Print</span>
+      <label className="ed-check">Fit to page <input type="checkbox" checked={fit} onChange={(event) => setFit(event.target.checked)} /></label>
+      <label className="ed-check">Rotate <input type="checkbox" checked={rotate} onChange={(event) => setRotate(event.target.checked)} /></label>
+      <button type="button" onClick={onPrint}>Print…</button>
+    </div>
+  );
+}
+
+function OpenPanel({ apps, onOpen }: { apps: Array<{ id: string; name: string }>; onOpen: (id: string) => void }) {
+  return (
+    <div className="ed-block">
+      <span className="ed-kicker">Open in</span>
+      <div className="text-list">
+        {apps.map((app) => <button key={app.id} type="button" onClick={() => onOpen(app.id)}>{app.name}</button>)}
+      </div>
+    </div>
+  );
+}
+
 function startObject(tool: Tool, p: { x: number; y: number }, stroke: string, strokeWidth: number, fill: string, blockSize: number, coverMode: "pixelate" | "blur" | "solid", coverColor: string): AnnotationObject | null {
   const id = uid();
   if (tool === "crop") return null;
@@ -750,7 +895,23 @@ function startObject(tool: Tool, p: { x: number; y: number }, stroke: string, st
   if (tool === "freehand") return { type: "freehand", id, points: [p], stroke, strokeWidth };
   if (tool === "highlight") return { type: "highlight", id, x: p.x, y: p.y, w: 1, h: 1, mode: "marker", color: stroke, opacity: 0.35 };
   if (tool === "obfuscate") return { type: "obfuscate", id, x: p.x, y: p.y, w: 1, h: 1, mode: coverMode, blockSize, color: coverColor };
+  if (tool === "magnify") return { type: "magnify", id, x: p.x, y: p.y, w: 48, h: 48, factor: 2 };
   return null;
+}
+
+function sampleHex(image: HTMLImageElement | null, x: number, y: number, width: number, height: number): string | null {
+  if (!image || !image.complete || image.naturalWidth < 1 || width < 1 || height < 1) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  const sx = Math.min(image.naturalWidth - 1, Math.max(0, (x / width) * image.naturalWidth));
+  const sy = Math.min(image.naturalHeight - 1, Math.max(0, (y / height) * image.naturalHeight));
+  ctx.drawImage(image, sx, sy, 1, 1, 0, 0, 1, 1);
+  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+  const hex = [r, g, b].map((part) => part.toString(16).padStart(2, "0")).join("");
+  return `#${hex.toUpperCase()}`;
 }
 
 function colorOf(object: AnnotationObject | null): string | null {
@@ -837,7 +998,7 @@ function resizeObject(object: AnnotationObject, x: number, y: number, w: number,
   const top = fromCenter ? y - h : h < 0 ? y + h : y;
   const width = fromCenter ? Math.abs(w) * 2 : Math.abs(w);
   const height = fromCenter ? Math.abs(h) * 2 : Math.abs(h);
-  if (object.type === "rect" || object.type === "ellipse" || object.type === "highlight" || object.type === "obfuscate") {
+  if (object.type === "rect" || object.type === "ellipse" || object.type === "highlight" || object.type === "obfuscate" || object.type === "magnify") {
     return { ...object, x: left, y: top, w: width, h: height };
   }
   if (object.type === "line" || object.type === "arrow") return { ...object, x2: x + w, y2: y + h };

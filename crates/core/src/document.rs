@@ -47,6 +47,7 @@ pub enum AnnotationObject {
     Obfuscate(ObfuscateObject),
     Image(ImageObject),
     Cursor(ImageObject),
+    Magnify(MagnifyObject),
 }
 
 impl AnnotationObject {
@@ -62,8 +63,22 @@ impl AnnotationObject {
             Self::Highlight(o) => &o.id,
             Self::Obfuscate(o) => &o.id,
             Self::Image(o) | Self::Cursor(o) => &o.id,
+            Self::Magnify(o) => &o.id,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export, export_to = "../../../ui/src/bindings/")]
+#[serde(rename_all = "camelCase")]
+pub struct MagnifyObject {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// Zoom inside the lens. Clamped to 2–4 at draw time.
+    pub factor: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
@@ -354,6 +369,7 @@ fn object_bounds(object: &AnnotationObject) -> Option<(f32, f32, f32, f32)> {
         AnnotationObject::Highlight(o) => Some((o.x, o.y, o.w, o.h)),
         AnnotationObject::Obfuscate(o) => Some((o.x, o.y, o.w, o.h)),
         AnnotationObject::Image(o) | AnnotationObject::Cursor(o) => Some((o.x, o.y, o.w, o.h)),
+        AnnotationObject::Magnify(o) => Some((o.x, o.y, o.w, o.h)),
         AnnotationObject::Line(o) => Some((o.x1.min(o.x2), o.y1.min(o.y2), (o.x2 - o.x1).abs(), (o.y2 - o.y1).abs())),
         AnnotationObject::Arrow(o) => Some((o.x1.min(o.x2), o.y1.min(o.y2), (o.x2 - o.x1).abs(), (o.y2 - o.y1).abs())),
         AnnotationObject::Text(o) => Some((o.x, o.y - o.size, (o.text.len() as f32 * o.size * 0.6).max(8.0), o.size + 8.0)),
@@ -425,6 +441,10 @@ fn shift_object(object: &mut AnnotationObject, dx: f32, dy: f32) {
             o.y += dy;
         }
         AnnotationObject::Image(o) | AnnotationObject::Cursor(o) => {
+            o.x += dx;
+            o.y += dy;
+        }
+        AnnotationObject::Magnify(o) => {
             o.x += dx;
             o.y += dy;
         }

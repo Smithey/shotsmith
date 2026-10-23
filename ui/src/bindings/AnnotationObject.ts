@@ -4,10 +4,11 @@ import type { CounterObject } from "./CounterObject";
 import type { EllipseObject } from "./EllipseObject";
 import type { HighlightObject } from "./HighlightObject";
 import type { ImageObject } from "./ImageObject";
+import type { MagnifyObject } from "./MagnifyObject";
 import type { LineObject } from "./LineObject";
 import type { ObfuscateObject } from "./ObfuscateObject";
 import type { PathObject } from "./PathObject";
 import type { RectObject } from "./RectObject";
 import type { TextObject } from "./TextObject";
 
-export type AnnotationObject = { "type": "rect" } & RectObject | { "type": "ellipse" } & EllipseObject | { "type": "line" } & LineObject | { "type": "arrow" } & ArrowObject | { "type": "freehand" } & PathObject | { "type": "text" } & TextObject | { "type": "counter" } & CounterObject | { "type": "highlight" } & HighlightObject | { "type": "obfuscate" } & ObfuscateObject | { "type": "image" } & ImageObject | { "type": "cursor" } & ImageObject;
+export type AnnotationObject = { "type": "rect" } & RectObject | { "type": "ellipse" } & EllipseObject | { "type": "line" } & LineObject | { "type": "arrow" } & ArrowObject | { "type": "freehand" } & PathObject | { "type": "text" } & TextObject | { "type": "counter" } & CounterObject | { "type": "highlight" } & HighlightObject | { "type": "obfuscate" } & ObfuscateObject | { "type": "image" } & ImageObject | { "type": "cursor" } & ImageObject | { "type": "magnify" } & MagnifyObject;

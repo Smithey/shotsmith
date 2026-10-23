@@ -2,11 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>Shotsmith captures the screen when you take a screenshot.</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Shotsmith reveals saved screenshots in Finder.</string>
-	<key>LSMultipleInstancesProhibited</key>
-	<true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Shotsmith</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>shotsmith</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

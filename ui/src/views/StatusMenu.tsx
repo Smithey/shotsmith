@@ -86,7 +86,7 @@ export function StatusMenu() {
         <Row id="repeat" hover={hover} setHover={setHover} label="Repeat last region" hint={menuHint(settings?.shortcuts.repeatLast)} onClick={() => run(() => api.repeat())} />
         <Row id="window" hover={hover} setHover={setHover} label="Window" hint={menuHint(settings?.shortcuts.window)} onClick={() => run(() => api.begin("window"))} />
         <Row id="screen" hover={hover} setHover={setHover} label="Full screen" hint={menuHint(settings?.shortcuts.fullScreen)} onClick={() => run(() => api.begin("screen"))} />
-        <Row id="scroll" hover={hover} setHover={setHover} label="Scrolling…" hint="Coming soon" disabled />
+        <Row id="scroll" hover={hover} setHover={setHover} label="Scrolling…" hint="" onClick={() => run(() => api.begin("scroll"))} />
         <div className={side === "left" ? "menu-sub flip" : "menu-sub"} onMouseEnter={() => { setHover("timed"); setPinsOpen(false); }}>
           <button type="button" className={hover === "timed" ? "menu-row on" : "menu-row"} onClick={() => run(() => api.countdown())}>
             <span>Timed · {seconds} s</span>
@@ -107,7 +107,8 @@ export function StatusMenu() {
             </div>
           )}
         </div>
-        <Row id="text" hover={hover} setHover={setHover} label="Copy text from screen" hint="Coming soon" disabled />
+        <Row id="text" hover={hover} setHover={setHover} label="Copy text from screen" hint="" onClick={() => run(() => api.begin("text"))} />
+        <Row id="measure" hover={hover} setHover={setHover} label="Measure" hint="" onClick={() => run(() => api.begin("measure"))} />
         <div className="menu-rule" />
         <div className="recent-block" onMouseEnter={() => setHover("history")}>
           <div className="recent-head">

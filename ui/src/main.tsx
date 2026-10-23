@@ -1,7 +1,9 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, viewName } from "./api";
+import { Actions } from "./views/Actions";
 import { Donut } from "./views/Donut";
+import { OpenIn } from "./views/OpenIn";
 import { Editor } from "./views/Editor";
 import { History } from "./views/History";
 import { Hud } from "./views/Hud";
@@ -42,6 +44,8 @@ function Shell() {
     case "pin": return <Pin />;
     case "onboarding": return <Onboarding />;
     case "menu": return <StatusMenu />;
+    case "actions": return <Actions />;
+    case "open-in": return <OpenIn />;
     default: return <Settings />;
   }
 }

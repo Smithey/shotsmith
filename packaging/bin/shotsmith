@@ -1,0 +1,4 @@
+#!/bin/sh
+# The shotsmith command. Build it with: cargo build -p shotsmith-cli
+root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+exec "$root/target/debug/shotsmith" "$@"

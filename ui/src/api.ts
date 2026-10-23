@@ -35,6 +35,12 @@ export type Settings = {
   timedSeconds: number;
   timedMode: string;
   filenameCounter: number;
+  warnOnSecrets: boolean;
+  watchFolders: string[];
+  recentApps: string[];
+  checkUpdates: boolean;
+  pluginsEnabled: boolean;
+  locale: string;
 };
 
 export type DisplayInfo = {
@@ -70,6 +76,7 @@ export type HistoryItem = {
   originalPath: string;
   documentPath: string | null;
   pinned: boolean;
+  ocrText?: string | null;
   previewPath?: string | null;
   previewRev?: number;
 };
@@ -236,7 +243,28 @@ export const api = {
   copyHex: (text: string) => invoke<void>("copy_hex", { text }),
   quit: () => invoke<void>("quit"),
   featureNotice: (message: string) => invoke<void>("feature_notice", { message }),
+  editorText: () => invoke<TextLine[]>("editor_text"),
+  editorSecrets: () => invoke<SecretFinding[]>("editor_secrets"),
+  dismissSecret: (findingId: string) => invoke<SecretFinding[]>("editor_dismiss_secret", { findingId }),
+  redactSecrets: () => invoke<EditorState>("editor_redact"),
+  shareEditor: () => invoke<void>("editor_share"),
+  printEditor: (fit: boolean, rotate: boolean) => invoke<void>("editor_print", { fit, rotate }),
+  beautify: (options: BeautifyOptions) => invoke<EditorState>("editor_beautify", { options }),
+  apps: () => invoke<AppChoice[]>("apps_list"),
+  openInState: () => invoke<{ captureId: string; recent: AppChoice[]; apps: AppChoice[] }>("open_in_state"),
+  openInChoose: (appId: string, captureId: string | null) => invoke<void>("open_in_choose", { appId, captureId }),
+  measureAt: (x: number, y: number) => invoke<{ x: number; y: number; w: number; h: number }>("measure_at", { x, y }),
+  lookup: (text: string) => invoke<void>("lookup_text", { text }),
+  plugins: () => invoke<PluginInfo[]>("plugins_list"),
+  runPlugin: (pluginId: string) => invoke<void>("editor_plugin", { pluginId }),
+  checkUpdates: () => invoke<string>("updates_check"),
 };
+
+export type TextLine = { text: string; x: number; y: number; w: number; h: number };
+export type SecretFinding = { id: string; kind: string; text: string; preview: string; x: number; y: number; w: number; h: number };
+export type AppChoice = { id: string; name: string };
+export type PluginInfo = { id: string; name: string; uploads: string };
+export type BeautifyOptions = { scale: number; backdrop: string; padding: number; radius: number; shadow: boolean; frame: boolean; watermark: string };
 
 export function currentWindow() {
   return getCurrentWindow();

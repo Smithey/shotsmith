@@ -1,6 +1,10 @@
+mod input;
+
 use image::RgbaImage;
 use thiserror::Error;
 use xcap::{Monitor, Window};
+
+pub use input::{element_bounds, installed_apps, lookup_text, open_with, print_file_windows, screen_reader_active, scroll_at, share_file_windows, AppChoice};
 
 #[derive(Debug, Error)]
 pub enum PlatformError {
@@ -145,7 +149,22 @@ pub fn open_system_settings(pane: &str) -> PlatformResult<()> {
         }
         return Err(PlatformError::Message(last));
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let target = match pane {
+            "keyboard" => "ms-settings:keyboard",
+            _ => "ms-settings:keyboard",
+        };
+        match std::process::Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .status()
+        {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(PlatformError::Message(format!("Windows Settings did not open ({status})."))),
+            Err(err) => Err(PlatformError::Message(err.to_string())),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = pane;
         Err(PlatformError::Message(
@@ -261,7 +280,15 @@ pub fn reveal_path(path: &std::path::Path) -> PlatformResult<()> {
     let result = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg("-R").arg(path).status()
     } else if cfg!(target_os = "windows") {
-        std::process::Command::new("explorer").arg(path).status()
+        // explorer.exe often exits with code 1 after a successful select.
+        let selected = format!("/select,{}", path.display());
+        return match std::process::Command::new("explorer").arg(selected).spawn() {
+            Ok(mut child) => {
+                let _ = child.wait();
+                Ok(())
+            }
+            Err(err) => Err(PlatformError::Message(err.to_string())),
+        };
     } else {
         std::process::Command::new("xdg-open").arg(target).status()
     };

@@ -1,0 +1,14 @@
+PackageIdentifier: Smithey.Shotsmith
+PackageVersion: 0.1.0
+PackageName: Shotsmith
+Publisher: Smithey
+License: MIT
+ShortDescription: Screenshot and annotation tool
+PackageUrl: https://shotsmith.app
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    InstallerUrl: https://github.com/Smithey/shotsmith/releases/download/v0.1.0/Shotsmith_0.1.0_x64-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: singleton
+ManifestVersion: 1.6.0

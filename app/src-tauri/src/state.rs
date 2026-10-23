@@ -40,6 +40,26 @@ pub struct Settings {
     pub timed_seconds: u32,
     pub timed_mode: String,
     pub filename_counter: u32,
+    #[serde(default = "default_true")]
+    pub warn_on_secrets: bool,
+    #[serde(default)]
+    pub watch_folders: Vec<String>,
+    #[serde(default)]
+    pub recent_apps: Vec<String>,
+    #[serde(default)]
+    pub check_updates: bool,
+    #[serde(default)]
+    pub plugins_enabled: bool,
+    #[serde(default = "default_locale")]
+    pub locale: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_locale() -> String {
+    "en".into()
 }
 
 impl Default for Settings {
@@ -92,6 +112,12 @@ impl Default for Settings {
             timed_seconds: 5,
             timed_mode: "region".into(),
             filename_counter: 1,
+            warn_on_secrets: true,
+            watch_folders: Vec::new(),
+            recent_apps: Vec::new(),
+            check_updates: false,
+            plugins_enabled: false,
+            locale: "en".into(),
         }
     }
 }
@@ -173,6 +199,7 @@ pub struct AppState {
     pub donut: Mutex<Option<DonutPayload>>,
     pub hud: Mutex<Option<HudPayload>>,
     pub capture_mode: Mutex<String>,
+    pub open_in_id: Mutex<Option<String>>,
 }
 
 pub fn app_root() -> PathBuf {

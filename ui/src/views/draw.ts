@@ -23,7 +23,7 @@ export function drawDocument(
     sceneCtx.drawImage(photo, 0, 0);
     for (const object of doc.objects) {
       if (object.type === "obfuscate" && object.mode !== "solid") obfuscateRegion(sceneCtx, object, fast);
-      else drawObject(sceneCtx, object, editing);
+      else drawObject(sceneCtx, object, editing, photo);
     }
     ctx.drawImage(scene, 0, 0);
   }
@@ -298,6 +298,7 @@ export function bounds(object: AnnotationObject): { x: number; y: number; w: num
     case "obfuscate":
     case "image":
     case "cursor":
+    case "magnify":
       return { x: object.x, y: object.y, w: object.w, h: object.h };
     case "line":
     case "arrow":
@@ -327,7 +328,7 @@ export function bounds(object: AnnotationObject): { x: number; y: number; w: num
   }
 }
 
-function drawObject(ctx: CanvasRenderingContext2D, object: AnnotationObject, editing: string | null) {
+function drawObject(ctx: CanvasRenderingContext2D, object: AnnotationObject, editing: string | null, photo: HTMLCanvasElement) {
   ctx.save();
   switch (object.type) {
     case "rect":
@@ -420,6 +421,27 @@ function drawObject(ctx: CanvasRenderingContext2D, object: AnnotationObject, edi
     case "cursor":
       drawBitmap(ctx, object.pngBase64, object.x, object.y, object.w, object.h);
       break;
+    case "magnify": {
+      const radius = Math.min(Math.abs(object.w), Math.abs(object.h)) / 2;
+      const cx = object.x + object.w / 2;
+      const cy = object.y + object.h / 2;
+      const factor = Math.min(4, Math.max(2, object.factor || 2));
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.translate(cx, cy);
+      ctx.scale(factor, factor);
+      ctx.translate(-cx, -cy);
+      ctx.drawImage(photo, 0, 0);
+      ctx.restore();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      break;
+    }
   }
   ctx.restore();
 }

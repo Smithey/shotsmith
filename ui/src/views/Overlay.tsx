@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { api, assetUrl, onRefresh, type DisplayInfo, type Settings, type WindowInfo } from "../api";
+import { isMac } from "../keys";
 
 type Rect = { x: number; y: number; w: number; h: number };
+type CaptureMode = "region" | "window" | "screen" | "text" | "scroll" | "measure";
 
 export function Overlay() {
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [windows, setWindows] = useState<WindowInfo[]>([]);
-  const [mode, setMode] = useState<"region" | "window" | "screen">("region");
+  const [mode, setMode] = useState<CaptureMode>("region");
+  const [mark, setMark] = useState<{ x: number; y: number } | null>(null);
+  const [markB, setMarkB] = useState<{ x: number; y: number } | null>(null);
+  const [element, setElement] = useState<Rect | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
   const [draft, setDraft] = useState<Rect | null>(null);
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
@@ -32,7 +37,7 @@ export function Overlay() {
     setLoupeOn(prefs.loupe);
     setIncludeCursor(prefs.includeCursor);
     const captureMode = await api.captureMode().catch(() => "region");
-    if (captureMode === "window" || captureMode === "screen" || captureMode === "region") setMode(captureMode);
+    if (captureMode === "window" || captureMode === "screen" || captureMode === "region" || captureMode === "text" || captureMode === "scroll" || captureMode === "measure") setMode(captureMode);
     setWindows(await api.windows().catch(() => []));
   }
 
@@ -118,6 +123,19 @@ export function Overlay() {
     if (!display) return;
     if ((event.target as HTMLElement).closest("button")) return;
     const p = point(event);
+    if (mode === "measure") {
+      const scale = display.scale || 1;
+      api.measureAt(display.x + p.x / scale, display.y + p.y / scale).then((hit) => {
+        setElement({ x: (hit.x - display.x) * scale, y: (hit.y - display.y) * scale, w: hit.w * scale, h: hit.h * scale });
+      }).catch(() => setElement(null));
+      if (!mark || markB) {
+        setMark(p);
+        setMarkB(null);
+      } else {
+        setMarkB(p);
+      }
+      return;
+    }
     if (mode === "screen") {
       confirm({ x: 0, y: 0, w: display.width, h: display.height });
       return;
@@ -151,7 +169,8 @@ export function Overlay() {
     setHex(hexAt(p));
     drawLoupe(p);
     const active = drag.current;
-    if (!active || mode !== "region") return;
+    const picking = mode === "region" || mode === "text" || mode === "scroll";
+    if (!active || !picking) return;
     let w = p.x - active.x;
     let h = p.y - active.y;
     if (event.shiftKey) {
@@ -178,7 +197,8 @@ export function Overlay() {
     const drew = drag.current?.handle === "new";
     setDraft(null);
     drag.current = null;
-    if (mode === "region" && drew && next && next.w > 8 && next.h > 8) {
+    const picking = mode === "region" || mode === "text" || mode === "scroll";
+    if (picking && drew && next && next.w > 8 && next.h > 8) {
       setRect(next);
       confirm(next);
     }
@@ -200,7 +220,7 @@ export function Overlay() {
       includeCursor,
       cursorX: cursor.x,
       cursorY: cursor.y,
-      mode: windowId ? "window" : "region",
+      mode: windowId ? "window" : mode,
     }).then(() => {
       confirming.current = false;
       drag.current = null;
@@ -269,13 +289,20 @@ export function Overlay() {
       {loupeOn && mode !== "window" && (
         <div className="loupe" style={{ left: loupeLeft, top: loupeTop }}>
           <canvas ref={loupeRef} />
-          <p>x {Math.round(cursor.x)} y {Math.round(cursor.y)}<br />{hex || "-"} · ⌘C copies</p>
+          <p>x {Math.round(cursor.x)} y {Math.round(cursor.y)}<br />{hex || "-"} · {isMac() ? "⌘C" : "Ctrl+C"} copies</p>
         </div>
+      )}
+      {element && <div className="shade" style={{ left: element.x / scale, top: element.y / scale, width: element.w / scale, height: element.h / scale }} />}
+      {mark && markB && (
+        <svg className="measure-line" aria-hidden="true">
+          <line x1={mark.x / scale} y1={mark.y / scale} x2={markB.x / scale} y2={markB.y / scale} />
+          <text x={(mark.x + markB.x) / 2 / scale} y={(mark.y + markB.y) / 2 / scale}>{Math.round(Math.hypot(markB.x - mark.x, markB.y - mark.y))} px</text>
+        </svg>
       )}
       {error && <p className="error" style={{ position: "absolute", top: 12, left: 12 }}>{error}</p>}
       {settings?.overlayToolbar !== false && (
         <>
-          <div className="hint">{mode === "window" ? "Click a window to capture it · Space for a region · Esc cancel" : mode === "screen" ? "Click to capture this display · Esc cancel" : "Release to capture · Shift locks aspect · Space for windows · Esc cancel"}</div>
+          <div className="hint">{hintFor(mode)}</div>
           <div className="toolbar">
             {(["region", "window", "screen"] as const).map((item) => (
               <button key={item} className={mode === item ? "active" : ""} onClick={(event) => { event.stopPropagation(); setMode(item); if (item === "screen" && display) confirm({ x: 0, y: 0, w: display.width, h: display.height }); }}>{item[0].toUpperCase() + item.slice(1)}</button>
@@ -288,6 +315,15 @@ export function Overlay() {
       )}
     </div>
   );
+}
+
+function hintFor(mode: CaptureMode): string {
+  if (mode === "window") return "Click a window to capture it · Space for a region · Esc cancel";
+  if (mode === "screen") return "Click to capture this display · Esc cancel";
+  if (mode === "text") return "Drag a region. Its text is copied when you release.";
+  if (mode === "scroll") return "Drag the region to scroll. Release to start.";
+  if (mode === "measure") return "Click an element for its size. Click two points for the distance.";
+  return "Release to capture · Shift locks aspect · Space for windows · Esc cancel";
 }
 
 function normalize(rect: Rect): Rect {

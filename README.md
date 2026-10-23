@@ -40,31 +40,28 @@ I have never written a line of code in Rust in my life. I hear it is fast. I don
 
 <img src="docs/assets/history.png" width="720" alt="History, with recent captures and search">
 
-- **Capture.** Region, window, full screen, repeat the last region, and a timer. A loupe helps line up the region.
-- **Donut.** After a capture, a wheel at the cursor can copy, save, open the editor, or pin.
-- **Editor.** Select, crop, arrow, rectangle, ellipse, line, freehand, text, callout, step counter, highlight, obfuscate, magnify, and an eyedropper. Shapes stay editable after you place them, including after you close the window. Undo and redo. Copy, Save PNG, and Save As.
-- **Obfuscate.** Pixelate, blur, or a solid block, drawn by hand. It is flattened when you export.
+- **Capture.** Region, window, full screen, scrolling, repeat the last region, and a timer. A loupe helps line up the region. Copy text from a region. Measure an element, or the distance between two clicks.
+- **Donut.** After a capture, a wheel at the cursor can copy, save, share, print, open the editor, or pin. VoiceOver and Narrator get the same actions as a normal menu.
+- **Editor.** Select, crop, arrow, rectangle, ellipse, line, freehand, text, callout, step counter, highlight, obfuscate, magnify, and an eyedropper. Shapes stay editable after you place them, including after you close the window. Undo and redo. Copy, Save PNG, and Save As. Selectable text, copy as code, and Look Up on Mac.
+- **Obfuscate.** Pixelate, blur, or a solid block, drawn by hand. A scan can mark emails, phone numbers, addresses, card numbers, IBANs, and API keys. You redact the ones you keep.
+- **Beautify.** Size, backdrop, frame, padding, radius, shadow, and a plain text watermark.
 - **Presets.** Format, scale, folder, and a file name pattern. The default preset is what Save uses.
-- **History and pins.** Searchable history. Editing a capture updates its thumbnail. Pins float a capture above other windows.
-- **Settings.** General, Capture, Shortcuts, Presets, Donut, Destinations, Advanced, and About. Shortcuts are click-to-record, with Mac symbols. Appearance follows the system, or you can lock light or dark.
-- **Several editors.** Each capture opens its own window. Right-click the Dock icon to move between Settings, History, and the editors.
+- **History and pins.** Searchable history, including text from a capture. Editing a capture updates its thumbnail. Pins float a capture above other windows.
+- **Share, print, and Open in.** The Mac share sheet and the Windows share window. Each system's print dialog, with fit and rotate. Open in lists installed apps and remembers recent ones.
+- **Automation.** A `shotsmith` command, `shotsmith://` links, and watch folders. Apple Shortcuts can open a link on Mac. That row is not in Windows Settings.
+- **Settings.** General, Capture, Shortcuts, Presets, Donut, Destinations, Automation, Plugins, Advanced, and About. Shortcuts are click-to-record. Appearance follows the system, or you can lock light or dark. Plugins stay off until you turn them on. Update checks stay off until you turn them on.
+- **Several editors.** Each capture opens its own window. On Mac, right-click the Dock icon to move between Settings, History, and the editors.
 
 <img src="docs/assets/settings.png" width="720" alt="Settings, open on General">
 
 ## Not in this version
 
-These are visible in the menu or Settings so the shape of the app is clear. Choosing one tells you it is later, rather than doing nothing:
+These stay out of the free app:
 
-- Scrolling capture
-- Copy text from the screen, and text selection inside a capture
-- Finding secrets in a capture (emails, keys, card numbers)
-- Beautify: padding, frames, backgrounds
-- Measure: sizes and spacing
-- Share sheet, print, and Open in
-- A `shotsmith` command, a `shotsmith://` link, watch folders, and Apple Shortcuts
-- Plugins and upload destinations
-- Homebrew and winget
-- An auto-updater
+- Face detection and automatic redaction
+- Translate, contrast checking, and style-kit watermarks
+- HEIC export. The format is listed, and this build rejects it on Mac and Windows.
+- Account, checkout, and share links
 
 ## Shotsmith Pro
 
@@ -97,7 +94,7 @@ You can change these in Settings.
 
 ## Privacy
 
-The free app does not phone home. There is no telemetry. Redaction and any later text recognition run on your Mac. See [PRIVACY.md](PRIVACY.md).
+The free app does not send telemetry. Text recognition and the secret scan run on your computer. An update check runs only after you turn it on in Settings, and then it only asks GitHub which release is current. A plugin you turn on can upload a capture. Settings shows what each plugin says it uploads. See [PRIVACY.md](PRIVACY.md).
 
 On first launch, macOS asks for Screen Recording. Some actions also need Accessibility. Both stay in System Settings, Privacy & Security.
 
@@ -134,6 +131,10 @@ Other Macs only open the app if it is signed with a **Developer ID Application**
 | `APPLE_PASSWORD` | The app-specific password |
 
 A push to `main` builds an Apple silicon disk image and a Windows 11 64-bit installer, then attaches both to a GitHub Release. The Mac image is signed and notarized when those secrets exist. Without them, that image is only ad-hoc signed.
+
+The Windows installer is Authenticode signed when `WINDOWS_CERTIFICATE` (a base64 `.pfx`) and `WINDOWS_CERTIFICATE_PASSWORD` are set. Otherwise it stays unsigned.
+
+`cargo build -p shotsmith-cli` builds the `shotsmith` command. `packaging/bin/shotsmith` runs it. The Homebrew cask and winget manifest are in `packaging/`. Paste the checksums from `SHA256SUMS` before you publish those.
 
 ## Check a download
 

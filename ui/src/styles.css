@@ -145,6 +145,16 @@ html[data-view="donut"] #root {
   margin: 0 auto;
 }
 .ed-bar { position: relative; z-index: 4; }
+.ed-text-btn { height: 28px; padding: 0 8px; border-radius: 6px; }
+.ed-text-btn.on { background: var(--accent, #0a84ff); color: white; }
+.text-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; }
+.text-list button, .action-list button { text-align: left; padding: 6px 8px; border-radius: 6px; }
+.text-list button.on { outline: 2px solid #0a84ff; }
+.secret-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.action-list { display: flex; flex-direction: column; gap: 6px; padding: 12px; }
+.measure-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.measure-line line { stroke: #0a84ff; stroke-width: 2; }
+.measure-line text { fill: white; font-size: 13px; }
 .ed-tools { position: absolute; left: 50%; transform: translateX(-50%); }
 button[data-tip], .ed-icon[data-tip], .ed-tip[data-tip] { position: relative; }
 .ed-tip { display: inline-flex; }

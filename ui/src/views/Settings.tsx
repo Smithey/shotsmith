@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, uid, type Preset, type Settings as SettingsModel } from "../api";
+import { api, uid, type PluginInfo, type Preset, type Settings as SettingsModel } from "../api";
+import { t } from "../i18n";
 import { canonicalShortcut, fromKeyEvent, isMac, keyLabel, splitShortcut } from "../keys";
 import type { ImageFormat } from "../bindings/ImageFormat";
 import type { OutputScale } from "../bindings/OutputScale";
@@ -84,6 +85,8 @@ export function Settings() {
   const [selected, setSelected] = useState("builtin-docs-png");
   const [preview, setPreview] = useState("");
   const [error, setError] = useState("");
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [updateNote, setUpdateNote] = useState("");
 
   useEffect(() => {
     Promise.all([api.settings(), api.presets()]).then(([next, list]) => {
@@ -92,6 +95,14 @@ export function Settings() {
       setSelected(next.defaultPresetId);
     }).catch((err: Error) => setError(err.message));
   }, []);
+
+  useEffect(() => {
+    if (settings?.locale) document.documentElement.lang = settings.locale;
+  }, [settings?.locale]);
+
+  useEffect(() => {
+    if (page === "Plugins") api.plugins().then(setPlugins).catch(() => setPlugins([]));
+  }, [page]);
 
   const preset = presets.find((item) => item.id === selected) ?? presets[0];
 
@@ -145,9 +156,9 @@ export function Settings() {
           )}
           {page === "Donut" && <Donut settings={settings} presets={presets} save={saveSettings} />}
           {page === "Destinations" && <Destinations settings={settings} save={saveSettings} />}
-          {page === "Automation" && <Later title="Automation" detail="The CLI, watch folders, and the shotsmith:// link are later in this version." />}
-          {page === "Plugins" && <Later title="Plugins" detail="Uploaders and other plugins are opt-in and not in this version." />}
-          {page === "Advanced" && <Advanced settings={settings} save={saveSettings} />}
+          {page === "Automation" && <Automation settings={settings} save={saveSettings} />}
+          {page === "Plugins" && <Plugins settings={settings} plugins={plugins} save={saveSettings} />}
+          {page === "Advanced" && <Advanced settings={settings} save={saveSettings} updateNote={updateNote} setUpdateNote={setUpdateNote} />}
           {page === "About" && (
             <div className="set-fill">
               <Group>
@@ -169,7 +180,7 @@ function General({ settings, save }: { settings: SettingsModel; save: (next: Set
     <div className="set-fill">
       <Group>
         <Check label="Launch at login" on={settings.launchAtLogin} set={(launchAtLogin) => save({ ...settings, launchAtLogin })} />
-        <Check label="Show Dock icon" on={settings.showDockIcon} set={(showDockIcon) => save({ ...settings, showDockIcon })} />
+        {isMac() && <Check label="Show Dock icon" on={settings.showDockIcon} set={(showDockIcon) => save({ ...settings, showDockIcon })} />}
         <Check label="Shutter sound" on={settings.sound} set={(sound) => save({ ...settings, sound })} />
         <Check label="Show the result HUD" on={settings.hudEnabled} set={(hudEnabled) => save({ ...settings, hudEnabled })} />
         <Row label="Appearance">
@@ -331,7 +342,7 @@ function Presets({ settings, presets, preset, preview, saveSettings, savePreset,
             <strong>After saving</strong>
             <Check label="Copy image to clipboard" on={preset.afterSave.includes("copyImage")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "copyImage") })} />
             <Check label="Copy file path" on={preset.afterSave.includes("copyPath")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "copyPath") })} />
-            <Check label="Reveal in Finder" on={preset.afterSave.includes("reveal")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "reveal") })} />
+            <Check label={isMac() ? "Reveal in Finder" : "Reveal in File Explorer"} on={preset.afterSave.includes("reveal")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "reveal") })} />
             <Check label="Strip metadata" on={preset.stripMetadata} set={(stripMetadata) => savePreset({ ...preset, stripMetadata })} />
           </div>
           <div className="set-card">
@@ -382,6 +393,7 @@ function Donut({ settings, presets, save }: { settings: SettingsModel; presets: 
               <option value="share">Share</option>
               <option value="copy-text">Copy text</option>
               <option value="open-in">Open in</option>
+              <option value="print">Print</option>
               {presets.map((item) => <option key={item.id} value={`preset:${item.id}`}>{item.name}</option>)}
             </select>
             <button type="button" className="set-mini" onClick={() => moveSlot(settings, index, -1, save)}>Up</button>
@@ -405,12 +417,53 @@ function Destinations({ settings, save }: { settings: SettingsModel; save: (next
             <option value="editor">Open editor</option>
           </select>
         </Row>
+        <Check label="Warn before saving a card number or key" on={settings.warnOnSecrets} set={(warnOnSecrets) => save({ ...settings, warnOnSecrets })} />
       </Group>
     </div>
   );
 }
 
-function Advanced({ settings, save }: { settings: SettingsModel; save: (next: SettingsModel) => void }) {
+function Automation({ settings, save }: { settings: SettingsModel; save: (next: SettingsModel) => void }) {
+  return (
+    <div className="set-fill">
+      <Group>
+        <div className="set-note"><strong>{t("automation.title")}</strong><p>{t("automation.command")}</p><p>{t("automation.link")}</p></div>
+        {isMac() && <div className="set-note"><strong>Apple Shortcuts</strong><p>{t("automation.shortcuts")}</p></div>}
+      </Group>
+      <Group>
+        <div className="set-note"><strong>{t("automation.watch")}</strong></div>
+        {settings.watchFolders.map((folder) => (
+          <Row key={folder} label={folder}>
+            <button type="button" className="set-mini" onClick={() => save({ ...settings, watchFolders: settings.watchFolders.filter((item) => item !== folder) })}>Remove</button>
+          </Row>
+        ))}
+        <Row label={t("automation.add")}>
+          <button type="button" className="set-mini" onClick={() => api.pickFolder().then((folder) => {
+            if (!folder || settings.watchFolders.includes(folder)) return;
+            save({ ...settings, watchFolders: [...settings.watchFolders, folder] });
+          })}>Choose</button>
+        </Row>
+      </Group>
+    </div>
+  );
+}
+
+function Plugins({ settings, plugins, save }: { settings: SettingsModel; plugins: PluginInfo[]; save: (next: SettingsModel) => void }) {
+  return (
+    <div className="set-fill">
+      <Group>
+        <div className="set-note"><strong>{t("plugins.title")}</strong><p>{t("plugins.off")}</p></div>
+        <Check label={t("plugins.enable")} on={settings.pluginsEnabled} set={(pluginsEnabled) => save({ ...settings, pluginsEnabled })} />
+        {plugins.length === 0 && <div className="set-note"><p>{t("plugins.empty")}</p></div>}
+        {plugins.map((plugin) => (
+          <div key={plugin.id} className="set-note"><strong>{plugin.name}</strong><p>{plugin.uploads}</p></div>
+        ))}
+      </Group>
+    </div>
+  );
+}
+
+function Advanced({ settings, save, updateNote, setUpdateNote }: { settings: SettingsModel; save: (next: SettingsModel) => void; updateNote: string; setUpdateNote: (value: string) => void }) {
   return (
     <div className="set-fill">
       <Group>
@@ -421,18 +474,18 @@ function Advanced({ settings, save }: { settings: SettingsModel; save: (next: Se
         <Row label="And this many days">
           <input className="set-input" type="number" value={settings.historyDays} onChange={(event) => save({ ...settings, historyDays: Number(event.target.value) })} />
         </Row>
+        <Check label={t("updates.check")} on={settings.checkUpdates} set={(checkUpdates) => save({ ...settings, checkUpdates })} />
+        <Row label={t("updates.button")}>
+          <button type="button" className="set-mini" disabled={!settings.checkUpdates} onClick={() => api.checkUpdates().then(setUpdateNote).catch((err: Error) => setUpdateNote(err.message))}>Check</button>
+        </Row>
+        {updateNote && <div className="set-note"><p>{updateNote}</p></div>}
+        <Row label={t("language.label")}>
+          <select className="set-input" value={settings.locale || "en"} onChange={(event) => save({ ...settings, locale: event.target.value })}>
+            <option value="en">English</option>
+          </select>
+        </Row>
       </Group>
       <p className="set-hint">History lives in the Shotsmith application support folder.</p>
-    </div>
-  );
-}
-
-function Later({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="set-fill">
-      <Group>
-        <div className="set-note"><strong>{title}</strong><p>{detail}</p></div>
-      </Group>
     </div>
   );
 }

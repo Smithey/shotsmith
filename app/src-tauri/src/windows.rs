@@ -71,7 +71,7 @@ pub fn open_view(
         .transparent(transparent)
         .background_color(if transparent { Color(0, 0, 0, 0) } else { Color(28, 28, 30, 255) })
         .always_on_top(transparent || label.starts_with("pin-") || capture || label == "hud" || label == "donut")
-        .skip_taskbar(transparent || label == "hud" || label == "donut" || label.starts_with("pin-"))
+        .skip_taskbar(transparent || capture || label == "hud" || label == "donut" || label.starts_with("pin-"))
         .resizable(decorations)
         .shadow(!transparent && !capture)
         .visible(!chrome)
@@ -79,6 +79,9 @@ pub fn open_view(
         .accept_first_mouse(capture || label == "donut" || label == "hud")
         .content_protected(capture);
     let window = builder.build().map_err(|err| err.to_string())?;
+    if transparent || label == "donut" || label == "hud" {
+        clear_round_window(&window);
+    }
     if chrome {
         watch_window(app, &window);
         list_in_dock(&window);
@@ -354,7 +357,14 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
         );
         ns.orderFrontRegardless();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (x, y, width, height);
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_skip_taskbar(true);
+        seat_tool_window(window);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (window, x, y, width, height);
     }
@@ -398,8 +408,42 @@ pub fn place_near_cursor(app: &AppHandle, label: &str, view: &str, size: f64) ->
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn seat_tool_window(window: &tauri::WebviewWindow) {
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let next = (ex | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        let corner: i32 = 1;
+        DwmSetWindowAttribute(hwnd, 33, &corner as *const i32 as *const _, 4);
+        let border: u32 = 0xFFFF_FFFE;
+        DwmSetWindowAttribute(hwnd, 34, &border as *const u32 as *const _, 4);
+    }
+}
+
 fn clear_round_window(window: &tauri::WebviewWindow) {
+    let _ = window.set_shadow(false);
     let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
+    #[cfg(target_os = "windows")]
+    seat_tool_window(window);
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;

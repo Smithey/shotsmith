@@ -1,4 +1,22 @@
 html[data-platform="windows"] {
   --font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --radius-window: 8px;
+  --radius-control: 4px;
+}
+
+html[data-platform="windows"] .editor,
+html[data-platform="windows"] .history,
+html[data-platform="windows"] .settings,
+html[data-platform="windows"] .status-menu {
+  font-family: var(--font);
+}
+
+html[data-platform="windows"] .ed-bar,
+html[data-platform="windows"] .hist-bar {
+  padding-left: 14px;
+}
+
+html[data-platform="windows"] .set-nav {
+  padding-top: 14px;
 }

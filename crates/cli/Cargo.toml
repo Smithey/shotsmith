@@ -1,0 +1,19 @@
+[package]
+name = "shotsmith-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "shotsmith"
+path = "src/main.rs"
+
+[dependencies]
+shotsmith-core = { workspace = true }
+shotsmith-platform = { workspace = true }
+shotsmith-ocr = { workspace = true }
+shotsmith-output = { workspace = true }
+image = { workspace = true }
+serde_json = { workspace = true }
+dirs = "5"

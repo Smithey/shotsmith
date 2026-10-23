@@ -80,6 +80,30 @@ jobs:
           prerelease: false
           args: ${{ steps.bundle.outputs.args }}
 
+      - name: Sign the Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$WINDOWS_CERTIFICATE" ]; then
+            echo "Windows signing secret is not set. The installer stays unsigned."
+            exit 0
+          fi
+          echo "$WINDOWS_CERTIFICATE" | base64 -d > cert.pfx
+          signtool=$(find "/c/Program Files (x86)/Windows Kits/10/bin" -path '*/x64/signtool.exe' | sort | tail -n 1)
+          test -n "$signtool"
+          version=$(jq -r .version app/src-tauri/tauri.conf.json)
+          tag="v${version}-build.${{ github.run_number }}"
+          find target/release/bundle -type f \( -name '*.exe' -o -name '*.msi' \) -print0 |
+            while IFS= read -r -d '' file; do
+              "$signtool" sign /f cert.pfx /p "$WINDOWS_CERTIFICATE_PASSWORD" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$file"
+              gh release upload "$tag" "$file" --clobber
+            done
+          rm -f cert.pfx
+
       - name: Collect installers
         shell: bash
         run: |
@@ -113,7 +137,7 @@ jobs:
           gh release upload "$tag" SHA256SUMS --clobber
           {
             echo "macOS 14 or newer, Apple silicon."
-            echo "Windows 11, 64-bit. The Windows installer is not Authenticode signed, so SmartScreen may warn."
+            echo "Windows 11, 64-bit. The installer is Authenticode signed when the Windows signing secrets are set. Otherwise SmartScreen may warn."
             echo
             echo "SHA256SUMS:"
             echo
