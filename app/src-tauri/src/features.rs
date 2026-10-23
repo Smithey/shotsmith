@@ -190,13 +190,13 @@ pub fn editor_redact(window: WebviewWindow, app: AppHandle, state: State<AppStat
                 color: "#1D1D1F".into(),
             }));
         }
-        session.stack.commit(document);
-        commands::push_pixels(session, None);
-        session.dirty = true;
+        let changed = commands::record_edit(session, document, None);
         let response = commands::with_pixels(session, false);
         let image_path = session.image_path.clone();
         drop(editors);
-        commands::publish_edits(&app, &state, &id, &image_path)?;
+        if changed {
+            commands::publish_edits(&app, &state, &id, &image_path)?;
+        }
         response
     };
     Ok(response)
@@ -253,9 +253,7 @@ pub fn editor_beautify(window: WebviewWindow, app: AppHandle, state: State<AppSt
         let png = shotsmith_output::encode(&pretty, ImageFormat::Png, 1.0).map_err(err_string)?;
         shotsmith_output::write_atomic(Path::new(&session.image_path), &png).map_err(err_string)?;
         session.image = Some(pretty.clone());
-        session.stack.commit(Document::new(pretty.width(), pretty.height()));
-        commands::push_pixels(session, Some(before));
-        session.dirty = true;
+        commands::record_edit(session, Document::new(pretty.width(), pretty.height()), Some(before));
         let response = commands::with_pixels(session, true);
         let image_path = session.image_path.clone();
         drop(editors);

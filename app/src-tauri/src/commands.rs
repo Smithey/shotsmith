@@ -391,6 +391,18 @@ pub(crate) fn push_pixels(session: &mut EditorSession, pixels: Option<Vec<u8>>) 
     session.pixels_future.clear();
 }
 
+/// One document step and one pixel step, or neither. `pixels` is the file from
+/// before the edit. `None` means the edit did not change the picture.
+pub(crate) fn record_edit(session: &mut EditorSession, next: Document, pixels: Option<Vec<u8>>) -> bool {
+    if session.stack.current() == &next && pixels.is_none() {
+        return false;
+    }
+    session.stack.checkpoint(next);
+    push_pixels(session, pixels);
+    session.dirty = true;
+    true
+}
+
 fn swap_pixels(session: &mut EditorSession, undo: bool) -> Result<bool, String> {
     let entry = if undo { session.pixels_past.pop() } else { session.pixels_future.pop() };
     let Some(entry) = entry else {
@@ -467,12 +479,7 @@ pub fn editor_commit(window: WebviewWindow, app: AppHandle, state: State<AppStat
         let Some(session) = editors.get_mut(&id) else {
             return Err("No capture is open.".into());
         };
-        let changed = session.stack.current() != &document;
-        if changed {
-            session.stack.commit(document);
-            session.dirty = true;
-            push_pixels(session, None);
-        }
+        let changed = record_edit(session, document, None);
         (
             session.capture_id.clone(),
             session.image_path.clone(),
@@ -560,10 +567,8 @@ pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>
     write_atomic(std::path::Path::new(&session.image_path), &png).map_err(err_string)?;
     let mut document = session.stack.current().clone();
     shotsmith_core::crop_document(&mut document, x as f32, y as f32, cropped.width() as f32, cropped.height() as f32);
-    session.stack.commit(document);
-    push_pixels(session, Some(before));
+    record_edit(session, document, Some(before));
     session.image = Some(cropped);
-    session.dirty = true;
     let capture_id = session.capture_id.clone();
     let image_path = session.image_path.clone();
     let response = with_pixels(session, true);
@@ -1409,6 +1414,54 @@ fn format_from_path(path: &std::path::Path) -> ImageFormat {
         "pdf" => ImageFormat::Pdf,
         "heic" => ImageFormat::Heic,
         _ => ImageFormat::Png,
+    }
+}
+
+#[cfg(test)]
+mod pixel_history {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn undo_and_redo_restore_a_crop() {
+        let dir = std::env::temp_dir().join(format!("shotsmith-crop-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("original.png");
+        let image = RgbaImage::from_pixel(8, 6, Rgba([10, 20, 30, 255]));
+        let original = shotsmith_output::encode(&image, ImageFormat::Png, 1.0).unwrap();
+        write_atomic(&path, &original).unwrap();
+        let mut session = EditorSession {
+            capture_id: "c".into(),
+            stack: UndoStack::new(Document::new(8, 6)),
+            image_path: path.to_string_lossy().to_string(),
+            dirty: false,
+            pixels_past: Vec::new(),
+            pixels_future: Vec::new(),
+            image: None,
+        };
+        let before = std::fs::read(&session.image_path).unwrap();
+        let decoded = image::load_from_memory(&before).unwrap().to_rgba8();
+        let cropped = shotsmith_capture::crop(&decoded, PixelRect { x: 1, y: 1, width: 4, height: 3 });
+        let png = shotsmith_output::encode(&cropped, ImageFormat::Png, 1.0).unwrap();
+        write_atomic(std::path::Path::new(&session.image_path), &png).unwrap();
+        let mut document = session.stack.current().clone();
+        shotsmith_core::crop_document(&mut document, 1.0, 1.0, cropped.width() as f32, cropped.height() as f32);
+        assert!(record_edit(&mut session, document, Some(before)));
+        assert!(session.stack.can_undo());
+        assert_eq!(session.stack.current().width, 4);
+
+        assert!(session.stack.undo());
+        assert!(swap_pixels(&mut session, true).unwrap());
+        let restored = image::open(&session.image_path).unwrap().to_rgba8();
+        assert_eq!((restored.width(), restored.height()), (8, 6));
+        assert_eq!(session.stack.current().width, 8);
+
+        assert!(session.stack.redo());
+        assert!(swap_pixels(&mut session, false).unwrap());
+        let again = image::open(&session.image_path).unwrap().to_rgba8();
+        assert_eq!((again.width(), again.height()), (4, 3));
+        assert_eq!(session.stack.current().width, 4);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

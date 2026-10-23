@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, uid, type PluginInfo, type Preset, type Settings as SettingsModel } from "../api";
 import { t } from "../i18n";
 import { canonicalShortcut, fromKeyEvent, isMac, keyLabel, splitShortcut } from "../keys";
@@ -180,9 +180,9 @@ function General({ settings, save }: { settings: SettingsModel; save: (next: Set
     <div className="set-fill">
       <Group>
         <Check label="Launch at login" on={settings.launchAtLogin} set={(launchAtLogin) => save({ ...settings, launchAtLogin })} />
-        {isMac() && <Check label="Show Dock icon" on={settings.showDockIcon} set={(showDockIcon) => save({ ...settings, showDockIcon })} />}
+        {isMac() && <Check label="Show Dock icon" info="Hides the icon in the Dock. Shotsmith stays in the menu bar." on={settings.showDockIcon} set={(showDockIcon) => save({ ...settings, showDockIcon })} />}
         <Check label="Shutter sound" on={settings.sound} set={(sound) => save({ ...settings, sound })} />
-        <Check label="Show the result HUD" on={settings.hudEnabled} set={(hudEnabled) => save({ ...settings, hudEnabled })} />
+        <Check label="Show the result HUD" info="A small banner after a capture. It says what happened, such as copied or saved." on={settings.hudEnabled} set={(hudEnabled) => save({ ...settings, hudEnabled })} />
         <Row label="Appearance">
           <select className="set-input" value={settings.appearance} onChange={(event) => save({ ...settings, appearance: event.target.value })}>
             <option value="system">System</option>
@@ -199,17 +199,17 @@ function Capture({ settings, save }: { settings: SettingsModel; save: (next: Set
   return (
     <div className="set-fill">
       <Group>
-        <Check label="Loupe" on={settings.loupe} set={(loupe) => save({ ...settings, loupe })} />
-        <Check label="Overlay toolbar" on={settings.overlayToolbar} set={(overlayToolbar) => save({ ...settings, overlayToolbar })} />
-        <Check label="Include cursor as an object" on={settings.includeCursor} set={(includeCursor) => save({ ...settings, includeCursor })} />
-        <Row label="Timed capture">
+        <Check label="Loupe" info="Magnifies the pixels under the pointer while you drag a region." on={settings.loupe} set={(loupe) => save({ ...settings, loupe })} />
+        <Check label="Overlay toolbar" info="Shows the capture tools on the selection screen." on={settings.overlayToolbar} set={(overlayToolbar) => save({ ...settings, overlayToolbar })} />
+        <Check label="Include cursor as an object" info="Adds the pointer as a shape you can move or delete. It is not drawn into the picture." on={settings.includeCursor} set={(includeCursor) => save({ ...settings, includeCursor })} />
+        <Row label="Timed capture" info="Waits, then takes the shot. Use the pause to open a menu or a tooltip.">
           <select className="set-input" value={settings.timedSeconds} onChange={(event) => save({ ...settings, timedSeconds: Number(event.target.value) })}>
             <option value={3}>3 seconds</option>
             <option value={5}>5 seconds</option>
             <option value={10}>10 seconds</option>
           </select>
         </Row>
-        <Row label="Then">
+        <Row label="Then" info="What the timer captures when the wait ends.">
           <select className="set-input" value={settings.timedMode} onChange={(event) => save({ ...settings, timedMode: event.target.value })}>
             <option value="region">Region</option>
             <option value="screen">Full screen</option>
@@ -230,7 +230,7 @@ function Shortcuts({ settings, presets, save, setError }: {
     <div className="set-fill">
       <Group>
         {(Object.keys(settings.shortcuts) as Array<keyof SettingsModel["shortcuts"]>).map((key) => (
-          <Row key={key} label={shortcutName(key)}>
+          <Row key={key} label={shortcutName(key)} info={shortcutInfo(key)}>
             <ShortcutField
               value={settings.shortcuts[key]}
               onError={setError}
@@ -304,7 +304,7 @@ function Presets({ settings, presets, preset, preview, saveSettings, savePreset,
           <Row label="Name">
             <input id="p-name" className="set-input" value={preset.name} onChange={(event) => savePreset({ ...preset, name: event.target.value })} />
           </Row>
-          <Row label="Format">
+          <Row label="Format" info="PNG is lossless. JPEG and WebP are smaller. HEIC is listed, but this build cannot save it yet.">
             <Segment value={preset.format} options={FORMATS.map((format) => [format, FORMAT_LABEL[format]])} set={(format) => savePreset({ ...preset, format })} />
           </Row>
           {(preset.format === "jpeg" || preset.format === "webp" || preset.format === "heic") && (
@@ -312,7 +312,7 @@ function Presets({ settings, presets, preset, preview, saveSettings, savePreset,
               <input type="range" min={0.1} max={1} step={0.05} value={preset.quality} onChange={(event) => savePreset({ ...preset, quality: Number(event.target.value) })} />
             </Row>
           )}
-          <Row label="Scale">
+          <Row label="Scale" info="@1x matches the size on screen. Native keeps every pixel from a Retina display.">
             <Segment value={preset.scale} options={[["points", "@1x"], ["native", "Native (@2x)"]] as Array<[OutputScale, string]>} set={(scale) => savePreset({ ...preset, scale })} />
           </Row>
           <Row label="Folder">
@@ -328,7 +328,7 @@ function Presets({ settings, presets, preset, preview, saveSettings, savePreset,
           </Row>
         </Group>
         <div className="set-card pattern-card">
-          <label htmlFor="p-pattern">Filename pattern</label>
+          <span className="set-label"><label htmlFor="p-pattern">Filename pattern</label><Info text={'Words in braces are filled in when the file is saved. A name that already exists gets " (2)".'} /></span>
           <input id="p-pattern" className="mono" value={preset.filenamePattern} onChange={(event) => savePreset({ ...preset, filenamePattern: event.target.value })} />
           <div className="token-row">
             {TOKENS.map((token) => (
@@ -343,18 +343,18 @@ function Presets({ settings, presets, preset, preview, saveSettings, savePreset,
             <Check label="Copy image to clipboard" on={preset.afterSave.includes("copyImage")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "copyImage") })} />
             <Check label="Copy file path" on={preset.afterSave.includes("copyPath")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "copyPath") })} />
             <Check label={isMac() ? "Reveal in Finder" : "Reveal in File Explorer"} on={preset.afterSave.includes("reveal")} set={() => savePreset({ ...preset, afterSave: toggle(preset.afterSave, "reveal") })} />
-            <Check label="Strip metadata" on={preset.stripMetadata} set={(stripMetadata) => savePreset({ ...preset, stripMetadata })} />
+            <Check label="Strip metadata" info="Removes location and camera details from the saved file." on={preset.stripMetadata} set={(stripMetadata) => savePreset({ ...preset, stripMetadata })} />
           </div>
           <div className="set-card">
             <strong>Effects</strong>
-            <Check label="Drop shadow" on={preset.effects.includes("shadow")} set={() => savePreset({ ...preset, effects: toggle(preset.effects, "shadow") })} />
-            <Check label="Border 1 px" on={preset.effects.includes("border")} set={() => savePreset({ ...preset, effects: toggle(preset.effects, "border") })} />
-            <Check label="Torn edges" on={preset.effects.includes("tornEdges")} set={() => savePreset({ ...preset, effects: toggle(preset.effects, "tornEdges") })} />
-            <Check label="Show on donut (slot 7)" on={preset.donutSlot === 7} set={(on) => savePreset({ ...preset, donutSlot: on ? 7 : null })} />
+            <Check label="Drop shadow" info="Puts a soft shadow outside the picture when you save." on={preset.effects.includes("shadow")} set={() => savePreset({ ...preset, effects: toggle(preset.effects, "shadow") })} />
+            <Check label="Border 1 px" info="Draws a thin line around the saved picture." on={preset.effects.includes("border")} set={() => savePreset({ ...preset, effects: toggle(preset.effects, "border") })} />
+            <Check label="Torn edges" info="Roughens the edges of the saved picture." on={preset.effects.includes("tornEdges")} set={() => savePreset({ ...preset, effects: toggle(preset.effects, "tornEdges") })} />
+            <Check label="Show on donut (slot 7)" info="Adds this preset to the wheel that appears after a capture." on={preset.donutSlot === 7} set={(on) => savePreset({ ...preset, donutSlot: on ? 7 : null })} />
           </div>
         </div>
         <Group>
-          <Row label="Global shortcut">
+          <Row label="Global shortcut" info="Runs this preset from any app. It has to differ from the capture shortcuts.">
             <ShortcutField
               value={preset.shortcut ?? ""}
               onError={setError}
@@ -372,7 +372,7 @@ function Donut({ settings, presets, save }: { settings: SettingsModel; presets: 
   return (
     <div className="set-fill">
       <Group>
-        <Row label="Slots">
+        <Row label="Slots" info="How many actions appear on the wheel after a capture.">
           <select className="set-input" value={settings.donutCount} onChange={(event) => save({ ...settings, donutCount: Number(event.target.value) })}>
             <option value={4}>4</option>
             <option value={6}>6</option>
@@ -409,7 +409,7 @@ function Destinations({ settings, save }: { settings: SettingsModel; save: (next
   return (
     <div className="set-fill">
       <Group>
-        <Row label="After capture">
+        <Row label="After capture" info="What Shotsmith does as soon as the shot is taken. The donut is the wheel of actions.">
           <select className="set-input" value={settings.afterCapture} onChange={(event) => save({ ...settings, afterCapture: event.target.value })}>
             <option value="donut">Show donut</option>
             <option value="copy">Copy</option>
@@ -417,7 +417,7 @@ function Destinations({ settings, save }: { settings: SettingsModel; save: (next
             <option value="editor">Open editor</option>
           </select>
         </Row>
-        <Check label="Warn before saving a card number or key" on={settings.warnOnSecrets} set={(warnOnSecrets) => save({ ...settings, warnOnSecrets })} />
+        <Check label="Warn before saving a card number or key" info="Stops copy, save, share, and print while a card number or a key is still visible." on={settings.warnOnSecrets} set={(warnOnSecrets) => save({ ...settings, warnOnSecrets })} />
       </Group>
     </div>
   );
@@ -437,7 +437,7 @@ function Automation({ settings, save }: { settings: SettingsModel; save: (next: 
             <button type="button" className="set-mini" onClick={() => save({ ...settings, watchFolders: settings.watchFolders.filter((item) => item !== folder) })}>Remove</button>
           </Row>
         ))}
-        <Row label={t("automation.add")}>
+        <Row label={t("automation.add")} info="Images added here are imported once the file size stays the same for a second.">
           <button type="button" className="set-mini" onClick={() => api.pickFolder().then((folder) => {
             if (!folder || settings.watchFolders.includes(folder)) return;
             save({ ...settings, watchFolders: [...settings.watchFolders, folder] });
@@ -453,7 +453,7 @@ function Plugins({ settings, plugins, save }: { settings: SettingsModel; plugins
     <div className="set-fill">
       <Group>
         <div className="set-note"><strong>{t("plugins.title")}</strong><p>{t("plugins.off")}</p></div>
-        <Check label={t("plugins.enable")} on={settings.pluginsEnabled} set={(pluginsEnabled) => save({ ...settings, pluginsEnabled })} />
+        <Check label={t("plugins.enable")} info="Each plugin runs outside Shotsmith. The line under its name says what it uploads." on={settings.pluginsEnabled} set={(pluginsEnabled) => save({ ...settings, pluginsEnabled })} />
         {plugins.length === 0 && <div className="set-note"><p>{t("plugins.empty")}</p></div>}
         {plugins.map((plugin) => (
           <div key={plugin.id} className="set-note"><strong>{plugin.name}</strong><p>{plugin.uploads}</p></div>
@@ -467,19 +467,19 @@ function Advanced({ settings, save, updateNote, setUpdateNote }: { settings: Set
   return (
     <div className="set-fill">
       <Group>
-        <Check label="Keep history" on={settings.keepHistory} set={(keepHistory) => save({ ...settings, keepHistory })} />
-        <Row label="Keep this many captures">
+        <Check label="Keep history" info="Saves captures so you can open them later. New captures are not stored while this is off." on={settings.keepHistory} set={(keepHistory) => save({ ...settings, keepHistory })} />
+        <Row label="Keep this many captures" info="When you pass this number, the oldest captures are removed.">
           <input className="set-input" type="number" value={settings.historyLimit} onChange={(event) => save({ ...settings, historyLimit: Number(event.target.value) })} />
         </Row>
-        <Row label="And this many days">
+        <Row label="And this many days" info="Captures older than this are removed.">
           <input className="set-input" type="number" value={settings.historyDays} onChange={(event) => save({ ...settings, historyDays: Number(event.target.value) })} />
         </Row>
-        <Check label={t("updates.check")} on={settings.checkUpdates} set={(checkUpdates) => save({ ...settings, checkUpdates })} />
+        <Check label={t("updates.check")} info="Off until you turn it on. Check asks GitHub which version is newest. Nothing else is sent." on={settings.checkUpdates} set={(checkUpdates) => save({ ...settings, checkUpdates })} />
         <Row label={t("updates.button")}>
           <button type="button" className="set-mini" disabled={!settings.checkUpdates} onClick={() => api.checkUpdates().then(setUpdateNote).catch((err: Error) => setUpdateNote(err.message))}>Check</button>
         </Row>
         {updateNote && <div className="set-note"><p>{updateNote}</p></div>}
-        <Row label={t("language.label")}>
+        <Row label={t("language.label")} info="English is the only language in this build.">
           <select className="set-input" value={settings.locale || "en"} onChange={(event) => save({ ...settings, locale: event.target.value })}>
             <option value="en">English</option>
           </select>
@@ -494,12 +494,61 @@ function Group({ children }: { children: ReactNode }) {
   return <div className="set-group">{children}</div>;
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return <div className="set-row"><span>{label}</span><div className="set-end">{children}</div></div>;
+function Row({ label, info, children }: { label: string; info?: string; children: ReactNode }) {
+  return (
+    <div className="set-row">
+      <span className="set-label">{label}{info && <Info text={info} />}</span>
+      <div className="set-end">{children}</div>
+    </div>
+  );
 }
 
-function Check({ label, on, set }: { label: string; on: boolean; set: (value: boolean) => void }) {
-  return <label className="set-row"><span>{label}</span><input type="checkbox" checked={on} onChange={(event) => set(event.target.checked)} /></label>;
+function Check({ label, info, on, set }: { label: string; info?: string; on: boolean; set: (value: boolean) => void }) {
+  const id = useId();
+  return (
+    <div className="set-row">
+      <span className="set-label"><label htmlFor={id}>{label}</label>{info && <Info text={info} />}</span>
+      <input id={id} type="checkbox" checked={on} onChange={(event) => set(event.target.checked)} />
+    </div>
+  );
+}
+
+function Info({ text }: { text: string }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const [tip, setTip] = useState<{ x: number; y: number; below: boolean } | null>(null);
+
+  function show() {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const below = rect.top < 88;
+    setTip({
+      x: Math.max(8, Math.min(rect.left, window.innerWidth - 276)),
+      y: below ? rect.bottom + 6 : rect.top - 6,
+      below,
+    });
+  }
+
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className="set-info"
+        aria-label={text}
+        onMouseEnter={show}
+        onMouseLeave={() => setTip(null)}
+        onFocus={show}
+        onBlur={() => setTip(null)}
+      >
+        i
+      </button>
+      {tip && (
+        <span className={tip.below ? "set-info-tip below" : "set-info-tip"} style={{ left: tip.x, top: tip.y }} role="tooltip">
+          {text}
+        </span>
+      )}
+    </>
+  );
 }
 
 function Segment<T extends string>({ value, options, set }: { value: T; options: Array<[T, string]>; set: (value: T) => void }) {
@@ -652,6 +701,15 @@ function shortcutName(key: string): string {
   if (key === "repeatLast") return "Repeat last region";
   if (key === "fullScreen") return "Full screen";
   return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function shortcutInfo(key: string): string | undefined {
+  if (key === "region") return "Drag to choose the area of the screen.";
+  if (key === "repeatLast") return "Captures the same rectangle as your last region shot.";
+  if (key === "window") return "Captures one window. You pick it after the shortcut.";
+  if (key === "fullScreen") return "Captures the whole display.";
+  if (key === "history") return "Opens the captures you have kept.";
+  return undefined;
 }
 
 function toggle<T extends string>(list: T[], value: T): T[] {

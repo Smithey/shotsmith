@@ -34,6 +34,12 @@ impl UndoStack {
         if next == self.current {
             return;
         }
+        self.checkpoint(next);
+    }
+
+    /// Records `next` even when it compares equal. A crop can keep the same
+    /// document and still need an undo step for the pixels stored beside it.
+    pub fn checkpoint(&mut self, next: Document) {
         self.past.push(self.current.clone());
         if self.past.len() > self.limit {
             self.past.remove(0);

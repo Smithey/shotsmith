@@ -93,9 +93,11 @@ fn draw_object(pixmap: &mut Pixmap, base: &Pixmap, object: &AnnotationObject) {
                 false,
             );
             if end {
+                shadow_head(pixmap, o.x2, o.y2, hx, hy, o.stroke_width, shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity));
                 draw_head(pixmap, o.x2, o.y2, hx, hy, o.stroke_width, &paint);
             }
             if both {
+                shadow_head(pixmap, o.x1, o.y1, tx, ty, o.stroke_width, shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity));
                 draw_head(pixmap, o.x1, o.y1, tx, ty, o.stroke_width, &paint);
             }
         }
@@ -467,18 +469,25 @@ fn apply_effects(pixmap: &mut Pixmap, effects: &[Effect]) {
         }
     }
     let mut next = image_to_pixmap(&image);
-    let pad = if effects.contains(&Effect::Shadow) { 28.0 } else { 0.0 };
+    let pad = if effects.contains(&Effect::Shadow) { 36.0 } else { 0.0 };
     let bw = if effects.contains(&Effect::Border) { 8.0 } else { 0.0 };
     let grow = (pad + bw) as u32;
     if grow > 0 {
         let mut canvas = Pixmap::new(next.width() + grow * 2, next.height() + grow * 2).unwrap();
         if effects.contains(&Effect::Shadow) {
-            let mut paint = Paint::default();
-            paint.set_color_rgba8(0, 0, 0, 70);
-            let rect = Rect::from_xywh(18.0, 22.0, next.width() as f32, next.height() as f32);
-            if let Some(rect) = rect {
-                canvas.fill_rect(rect, &paint, Transform::identity(), None);
-            }
+            blit_outer_shadow(
+                &mut canvas,
+                grow as f32,
+                grow as f32,
+                next.width() as f32,
+                next.height() as f32,
+                0.0,
+                0.0,
+                10.0,
+                16.0,
+                0.45,
+                false,
+            );
         }
         canvas.draw_pixmap(
             grow as i32,
@@ -751,16 +760,34 @@ fn stroke_line(
         return;
     };
     if let Some(shade) = shadow {
-        let shadow_paint = paint_hex("#000000", shade.opacity);
-        let mut stroke = Stroke::default();
-        stroke.width = width.max(1.0) + shade.blur.max(0.0) * 0.55;
-        stroke.line_cap = LineCap::Round;
-        pixmap.stroke_path(&path, &shadow_paint, &stroke, Transform::from_translate(shade.x, shade.y), None);
+        if let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) {
+            let shadow_paint = paint_hex("#000000", shade.opacity);
+            let mut wide = Stroke::default();
+            wide.width = width.max(1.0) + shade.blur.max(0.0) * 0.55;
+            wide.line_cap = LineCap::Round;
+            layer.stroke_path(&path, &shadow_paint, &wide, Transform::from_translate(shade.x, shade.y), None);
+            let mut erase = Paint::default();
+            erase.set_color_rgba8(0, 0, 0, 255);
+            erase.blend_mode = tiny_skia::BlendMode::DestinationOut;
+            let mut cut = Stroke::default();
+            cut.width = width.max(1.0);
+            cut.line_cap = if round_cap { LineCap::Round } else { LineCap::Butt };
+            layer.stroke_path(&path, &erase, &cut, Transform::identity(), None);
+            pixmap.draw_pixmap(0, 0, layer.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), None);
+        }
     }
     let mut stroke = Stroke::default();
     stroke.width = width.max(1.0);
     stroke.line_cap = if round_cap { LineCap::Round } else { LineCap::Butt };
     pixmap.stroke_path(&path, paint, &stroke, Transform::identity(), None);
+}
+
+fn shadow_head(pixmap: &mut Pixmap, x: f32, y: f32, dx: f32, dy: f32, width: f32, shade: Option<Shade>) {
+    let Some(shade) = shade else {
+        return;
+    };
+    let paint = paint_hex("#000000", shade.opacity);
+    draw_head(pixmap, x + shade.x, y + shade.y, dx, dy, width + shade.blur.max(0.0) * 0.35, &paint);
 }
 
 fn draw_head(pixmap: &mut Pixmap, x: f32, y: f32, dx: f32, dy: f32, width: f32, paint: &Paint) {
@@ -807,36 +834,61 @@ fn shadow_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f32,
     let Some(shade) = shade else {
         return;
     };
-    let layers = 4;
-    for i in 0..layers {
-        let t = (i + 1) as f32 / layers as f32;
-        let spread = shade.blur.max(0.0) * t * 0.35;
-        let alpha = shade.opacity * (1.0 - t * 0.65) / layers as f32;
-        let paint = paint_hex("#000000", alpha);
-        fill_round(
-            pixmap,
-            x + shade.x - spread,
-            y + shade.y - spread * 0.35,
-            w + spread * 2.0,
-            h + spread * 2.0,
-            radius + spread,
-            &paint,
-        );
-    }
+    blit_outer_shadow(pixmap, x, y, w, h, radius, shade.x, shade.y, shade.blur, shade.opacity, false);
 }
 
 fn shadow_oval(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, shade: Option<Shade>) {
     let Some(shade) = shade else {
         return;
     };
-    let layers = 4;
+    blit_outer_shadow(pixmap, x, y, w, h, 0.0, shade.x, shade.y, shade.blur, shade.opacity, true);
+}
+
+fn blit_outer_shadow(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    ox: f32,
+    oy: f32,
+    blur: f32,
+    opacity: f32,
+    oval: bool,
+) {
+    if opacity <= 0.0 || w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+    let layers = 5;
     for i in 0..layers {
         let t = (i + 1) as f32 / layers as f32;
-        let spread = shade.blur.max(0.0) * t * 0.35;
-        let alpha = shade.opacity * (1.0 - t * 0.65) / layers as f32;
+        let spread = blur.max(0.0) * t * 0.5;
+        let alpha = opacity * (1.0 - t * 0.6) / layers as f32;
         let paint = paint_hex("#000000", alpha);
-        fill_oval(pixmap, x + shade.x - spread, y + shade.y - spread * 0.35, w + spread * 2.0, h + spread * 2.0, &paint);
+        let sx = x + ox - spread;
+        let sy = y + oy - spread;
+        let sw = w + spread * 2.0;
+        let sh = h + spread * 2.0;
+        if oval {
+            fill_oval(&mut layer, sx, sy, sw, sh, &paint);
+        } else {
+            fill_round(&mut layer, sx, sy, sw, sh, radius + spread, &paint);
+        }
     }
+    let mut erase = Paint::default();
+    erase.set_color_rgba8(0, 0, 0, 255);
+    erase.blend_mode = tiny_skia::BlendMode::DestinationOut;
+    erase.anti_alias = true;
+    if oval {
+        fill_oval(&mut layer, x, y, w, h, &erase);
+    } else {
+        fill_round(&mut layer, x, y, w, h, radius, &erase);
+    }
+    pixmap.draw_pixmap(0, 0, layer.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), None);
 }
 
 fn image_to_pixmap(image: &RgbaImage) -> Pixmap {
@@ -920,8 +972,7 @@ pub fn beautify(image: &RgbaImage, options: &BeautifyOptions) -> RgbaImage {
     let w = scaled.width() as f32;
     let h = scaled.height() as f32;
     if options.shadow {
-        let paint = paint_hex("#000000", 0.28);
-        fill_round(&mut pixmap, x + 0.0, y + 8.0, w, h, radius, &paint);
+        blit_outer_shadow(&mut pixmap, x, y, w, h, radius, 0.0, 10.0, 18.0, 0.35, false);
     }
     let photo = image_to_pixmap(&scaled);
     pixmap.draw_pixmap(
@@ -1047,6 +1098,52 @@ mod tests {
         }
         assert_ne!(out.get_pixel(0, 0).0, image.get_pixel(0, 0).0);
         assert_eq!(out.get_pixel(15, 15).0, image.get_pixel(15, 15).0);
+    }
+
+    #[test]
+    fn shadow_stays_outside_an_empty_rect() {
+        use shotsmith_core::RectObject;
+        let image = RgbaImage::from_pixel(40, 40, Rgba([255, 255, 255, 255]));
+        let doc = Document {
+            version: 1,
+            width: 40,
+            height: 40,
+            objects: vec![AnnotationObject::Rect(RectObject {
+                id: "r".into(),
+                x: 12.0,
+                y: 10.0,
+                w: 16.0,
+                h: 14.0,
+                stroke: "#000000".into(),
+                stroke_width: 2.0,
+                fill: "none".into(),
+                radius: 0.0,
+                opacity: 1.0,
+                shadow: true,
+                shadow_blur: 6.0,
+                shadow_x: 0.0,
+                shadow_y: 4.0,
+                shadow_opacity: 0.9,
+            })],
+        };
+        let out = render(&image, &doc, &[]);
+        let center = out.get_pixel(20, 17).0;
+        assert!(center[0] > 200, "interior darkened: {center:?}");
+        let below = out.get_pixel(20, 27).0;
+        assert!(below[0] < 230, "no outer shadow: {below:?}");
+    }
+
+    #[test]
+    fn drop_shadow_sits_outside_the_image() {
+        let image = RgbaImage::from_pixel(20, 20, Rgba([240, 240, 240, 255]));
+        let out = render(&image, &Document::new(20, 20), &[Effect::Shadow]);
+        assert!(out.width() > 20, "shadow did not pad the canvas");
+        let pad = (out.width() - 20) / 2;
+        let inside = out.get_pixel(pad + 10, pad + 10).0;
+        assert!(inside[0] > 220 && inside[3] == 255, "shadow filled the image: {inside:?}");
+        let below = out.get_pixel(pad + 10, pad + 20 + 8).0;
+        let above = out.get_pixel(pad + 10, 2).0;
+        assert!(below[3] > above[3], "shadow falls inward: below {below:?} above {above:?}");
     }
 
     #[test]

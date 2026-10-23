@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, onRefresh, uid, SWATCHES, type AnnotationObject, type Document, type EditorState, type Preset, type SecretFinding, type TextLine } from "../api";
 import type { Effect } from "../bindings/Effect";
 import { isMac } from "../keys";
@@ -73,6 +73,13 @@ export function Editor() {
   >(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const pending = useRef(Promise.resolve());
+  const pictureRev = useRef(0);
+  const historyRef = useRef<(redo: boolean) => void>(() => {});
+  const holdFit = useRef(true);
+  const fitRef = useRef<(document?: Document | null) => boolean>(() => false);
+  const copyRef = useRef<() => void>(() => {});
+  const toastTimer = useRef(0);
+  const [toast, setToast] = useState("");
   const docRef = useRef(doc);
   const frame = useRef(0);
   const canvasSize = useRef({ w: 0, h: 0 });
@@ -94,10 +101,16 @@ export function Editor() {
   }
 
   async function showPicture() {
+    const token = ++pictureRev.current;
     const encoded = await api.editorImage();
+    if (pictureRev.current !== token) return;
     await new Promise<void>((resolve, reject) => {
       const image = new Image();
       image.onload = () => {
+        if (pictureRev.current !== token) {
+          resolve();
+          return;
+        }
         imageRef.current = image;
         setImageRev((rev) => rev + 1);
         resolve();
@@ -185,7 +198,10 @@ export function Editor() {
     load().catch((err: Error) => setError(err.message));
     let stop = () => {};
     onRefresh(() => load().catch((err: Error) => setError(err.message))).then((un) => { stop = un; });
-    return () => stop();
+    return () => {
+      stop();
+      window.clearTimeout(toastTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -219,17 +235,27 @@ export function Editor() {
       const next = KEYS[event.key.toLowerCase()];
       if (next && !LATER.has(next) && !event.metaKey && !event.ctrlKey) setTool(next);
       if (event.key === "Escape") setTool("select");
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && !event.altKey) {
         event.preventDefault();
-        (event.shiftKey ? api.redo() : api.undo()).then(applyRemote).catch((err: Error) => setError(err.message));
+        historyRef.current(event.shiftKey);
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         save(event.shiftKey);
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") api.copyEditor();
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "0") setZoom(fit());
-      if ((event.metaKey || event.ctrlKey) && event.key === "1") setZoom(1);
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        copyRef.current();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "0") {
+        holdFit.current = true;
+        fitRef.current();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === "1") {
+        holdFit.current = false;
+        setZoom(1);
+        setPan({ x: 40, y: 40 });
+      }
       const current = docRef.current;
       const ids = view.current.selected;
       if ((event.key === "Delete" || event.key === "Backspace") && ids.length && current) {
@@ -266,8 +292,15 @@ export function Editor() {
     docRef.current = next.document;
     setState(next);
     setDoc(next.document);
-    if (next.pixelsChanged) showPicture().catch((err: Error) => setError(err.message));
+    const image = imageRef.current;
+    const sizeChanged = !image || !image.complete || image.naturalWidth !== next.document.width || image.naturalHeight !== next.document.height;
+    if (next.pixelsChanged || sizeChanged) showPicture().catch((err: Error) => setError(err.message));
   }
+
+  function runHistory(redo: boolean) {
+    enqueue(() => (redo ? api.redo() : api.undo()).then(applyRemote).catch((err: Error) => setError(err.message)));
+  }
+  historyRef.current = runHistory;
 
   function enqueue(job: () => Promise<unknown>) {
     pending.current = pending.current.then(job).then(() => undefined, () => undefined);
@@ -373,7 +406,8 @@ export function Editor() {
     }
     if (tool === "counter") {
       const number = current.objects.reduce((max, object) => object.type === "counter" ? Math.max(max, object.number) : max, 0) + 1;
-      const object: AnnotationObject = { type: "counter", id: uid(), x: p.x, y: p.y, number, style: "circle", fill: stroke, size: 28 };
+      const size = Math.min(Math.max(48, textSize), imageCap(current));
+      const object: AnnotationObject = { type: "counter", id: uid(), x: p.x - size / 2, y: p.y - size / 2, number, style: "circle", fill: stroke, size };
       commit({ ...current, objects: [...current.objects, object] });
       setSelected([object.id]);
       return;
@@ -421,7 +455,7 @@ export function Editor() {
     }
     if (active.mode === "resize") {
       active.moved = true;
-      const next = applyHandle(active.object, active.handle, p);
+      const next = applyHandle(active.object, active.handle, p, current);
       const resized = { ...current, objects: current.objects.map((object) => object.id === next.id ? next : object) };
       preview(resized, liveObfuscate(resized));
       return;
@@ -504,6 +538,7 @@ export function Editor() {
       }
       const next = await api.editor();
       setState(next);
+      flash("Saved");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed.");
     }
@@ -513,11 +548,49 @@ export function Editor() {
     void save(false, pngPreset?.id ?? presetId);
   }
 
-  function fit() {
-    const canvas = canvasRef.current;
-    if (!canvas || !doc) return 1;
-    return Math.min(canvas.clientWidth / doc.width, canvas.clientHeight / doc.height) * 0.9;
+  function flash(message: string) {
+    setToast(message);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 1600);
   }
+
+  function copyImage() {
+    api.copyEditor().then(() => flash("Copied")).catch((err: Error) => setError(err.message));
+  }
+  copyRef.current = copyImage;
+
+  function placeFit(document = docRef.current) {
+    const canvas = canvasRef.current;
+    if (!canvas || !document || document.width < 1 || document.height < 1) return false;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (width < 2 || height < 2) return false;
+    const scale = Math.min(width / document.width, height / document.height) * 0.9;
+    const next = Math.max(0.05, Math.min(scale, 8));
+    setZoom(next);
+    setPan({
+      x: (width - document.width * next) / 2,
+      y: (height - document.height * next) / 2,
+    });
+    return true;
+  }
+  fitRef.current = placeFit;
+
+  useLayoutEffect(() => {
+    if (!doc || !holdFit.current) return;
+    placeFit(doc);
+  }, [doc?.width, doc?.height]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => {
+      if (!holdFit.current) return;
+      fitRef.current(docRef.current);
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   const selectedObject = doc?.objects.find((object) => object.id === selected[selected.length - 1]) ?? null;
   const preset = presets.find((item) => item.id === presetId) ?? presets[0];
@@ -527,6 +600,7 @@ export function Editor() {
   const shownFill = selectedObject && "fill" in selectedObject && selectedObject.type !== "counter" ? selectedObject.fill : fill;
   const shownWeight = strokeWidth;
   const shownSize = textSize;
+  const sizeMax = doc ? imageCap(doc) : 512;
   const showText = selectedObject ? selectedObject.type === "text" : tool === "text" || tool === "callout";
   const showFill = showText || (selectedObject ? selectedObject.type === "rect" || selectedObject.type === "ellipse" : tool === "rect" || tool === "ellipse");
   const showWeight = selectedObject ? "strokeWidth" in selectedObject : ["arrow", "rect", "ellipse", "line", "freehand"].includes(tool);
@@ -557,7 +631,14 @@ export function Editor() {
       preview(nextDoc, liveObfuscate(nextDoc));
     }
     if (selectedObject.type === "counter") {
-      const nextDoc = { ...current, objects: current.objects.map((object) => object.type === "counter" && object.id === selectedObject.id ? { ...object, size: next } : object) };
+      const nextDoc = {
+        ...current,
+        objects: current.objects.map((object) => {
+          if (object.type !== "counter" || object.id !== selectedObject.id) return object;
+          const shift = (next - object.size) / 2;
+          return { ...object, size: next, x: object.x - shift, y: object.y - shift };
+        }),
+      };
       preview(nextDoc, liveObfuscate(nextDoc));
     }
   }
@@ -618,7 +699,7 @@ export function Editor() {
     const chosen = pickedLine == null ? textLines : textLines.filter((_, index) => index === pickedLine);
     const body = chosen.map((line) => line.text).join("\n");
     const text = asCode ? "```\n" + body + "\n```" : body;
-    api.copyHex(text).catch((err: Error) => setError(err.message));
+    api.copyHex(text).then(() => flash(asCode ? "Copied as code" : "Copied")).catch((err: Error) => setError(err.message));
   }
 
   function toggleEffect(effect: Effect) {
@@ -644,13 +725,13 @@ export function Editor() {
         </div>
         <div className="ed-actions">
           <span className="ed-tip" data-tip="Undo">
-            <button type="button" className="ed-icon" aria-label="Undo" disabled={!state?.canUndo} onClick={() => api.undo().then(applyRemote)}><Icon name="undo" /></button>
+            <button type="button" className="ed-icon" aria-label="Undo" disabled={!state?.canUndo} onClick={() => runHistory(false)}><Icon name="undo" /></button>
           </span>
           <span className="ed-tip" data-tip="Redo">
-            <button type="button" className="ed-icon" aria-label="Redo" disabled={!state?.canRedo} onClick={() => api.redo().then(applyRemote)}><Icon name="redo" /></button>
+            <button type="button" className="ed-icon" aria-label="Redo" disabled={!state?.canRedo} onClick={() => runHistory(true)}><Icon name="redo" /></button>
           </span>
-          <button type="button" className="ed-icon" data-tip="Copy" aria-label="Copy to clipboard" onClick={() => api.copyEditor().catch((err: Error) => setError(err.message))}><Icon name="copy" /></button>
-          <button type="button" className="ed-icon" data-tip="Share" aria-label="Share" onClick={() => api.shareEditor().catch((err: Error) => setError(err.message))}><Icon name="share" /></button>
+          <button type="button" className="ed-icon" data-tip="Copy" aria-label="Copy to clipboard" onClick={copyImage}><Icon name="copy" /></button>
+          <button type="button" className="ed-icon" data-tip="Share" aria-label="Share" onClick={() => api.shareEditor().then(() => flash("Opening share")).catch((err: Error) => setError(err.message))}><Icon name="share" /></button>
           <button type="button" className={panel === "text" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("text")}>Text</button>
           <button type="button" className={panel === "secrets" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("secrets")}>Secrets</button>
           <button type="button" className={panel === "beautify" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => setPanel((current) => current === "beautify" ? "" : "beautify")}>Beautify</button>
@@ -663,7 +744,7 @@ export function Editor() {
             </div>
             {saveMenu && (
               <div className="ed-save-menu" role="menu">
-                <button type="button" role="menuitem" onClick={() => { setSaveMenu(false); api.copyEditor().catch((err: Error) => setError(err.message)); }}>Copy</button>
+                <button type="button" role="menuitem" onClick={() => { setSaveMenu(false); copyImage(); }}>Copy</button>
                 <button type="button" role="menuitem" onClick={() => savePng()}>Save PNG</button>
                 {presets.filter((item) => item.id !== pngPreset?.id && item.id !== "builtin-clipboard").map((item) => (
                   <button key={item.id} type="button" role="menuitem" onClick={() => { setPresetId(item.id); void save(false, item.id); }}>
@@ -715,12 +796,12 @@ export function Editor() {
             />
           )}
           <div className="ed-zoom">
-            <button type="button" data-tip="Zoom out" aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.1, z / 1.15))}>−</button>
+            <button type="button" data-tip="Zoom out" aria-label="Zoom out" onClick={() => { holdFit.current = false; setZoom((z) => Math.max(0.1, z / 1.15)); }}>−</button>
             <span>{Math.round(zoom * 100)}%</span>
-            <button type="button" data-tip="Zoom in" aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(8, z * 1.15))}>+</button>
+            <button type="button" data-tip="Zoom in" aria-label="Zoom in" onClick={() => { holdFit.current = false; setZoom((z) => Math.min(8, z * 1.15)); }}>+</button>
             <span className="ed-gap" />
-            <button type="button" data-tip="Fit" onClick={() => setZoom(fit())}>Fit {isMac() ? "⌘0" : "Ctrl+0"}</button>
-            <button type="button" data-tip="Actual size" onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); }}>100% {isMac() ? "⌘1" : "Ctrl+1"}</button>
+            <button type="button" data-tip="Fit" onClick={() => { holdFit.current = true; placeFit(); }}>Fit {isMac() ? "⌘0" : "Ctrl+0"}</button>
+            <button type="button" data-tip="Actual size" onClick={() => { holdFit.current = false; setZoom(1); setPan({ x: 40, y: 40 }); }}>100% {isMac() ? "⌘1" : "Ctrl+1"}</button>
           </div>
         </div>
         <aside className="ed-inspector">
@@ -734,10 +815,10 @@ export function Editor() {
               }}><option value="bold">System · Bold</option><option value="regular">System</option></select></div>
             )}
             {(showText || tool === "counter" || selectedObject?.type === "counter") && (
-              <div className="ed-line"><label htmlFor="ed-size">Size</label><input id="ed-size" type="range" min={10} max={72} value={shownSize} onChange={(event) => paintSize(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shownSize)}</span></div>
+              <div className="ed-line"><label htmlFor="ed-size">Size</label><input id="ed-size" type="range" min={10} max={sizeMax} value={Math.min(shownSize, sizeMax)} onChange={(event) => paintSize(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><input className="ed-num" type="number" min={10} max={sizeMax} value={Math.round(shownSize)} onChange={(event) => paintSize(clampSize(Number(event.target.value), 10, sizeMax))} onBlur={endGesture} /></div>
             )}
             {showWeight && (
-              <div className="ed-line"><label htmlFor="ed-weight">Weight</label><input id="ed-weight" type="range" min={1} max={24} value={shownWeight} onChange={(event) => paintWeight(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shownWeight)}</span></div>
+              <div className="ed-line"><label htmlFor="ed-weight">Weight</label><input id="ed-weight" type="range" min={1} max={sizeMax} value={Math.min(shownWeight, sizeMax)} onChange={(event) => paintWeight(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><input className="ed-num" type="number" min={1} max={sizeMax} value={Math.round(shownWeight)} onChange={(event) => paintWeight(clampSize(Number(event.target.value), 1, sizeMax))} onBlur={endGesture} /></div>
             )}
             {showFill && <ColourChoices label="Fill" value={shownFill} allowNone onPick={paintFill} />}
             {selectedObject && "shadow" in selectedObject && (
@@ -745,9 +826,9 @@ export function Editor() {
             )}
             {selectedObject && "shadow" in selectedObject && selectedObject.shadow && (
               <>
-                <div className="ed-line"><label htmlFor="ed-shadow-blur">Blur</label><input id="ed-shadow-blur" type="range" min={0} max={40} value={shadowBlur} onChange={(event) => { const next = Number(event.target.value); setShadowBlur(next); paintShadow({ shadowBlur: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowBlur)}</span></div>
-                <div className="ed-line"><label htmlFor="ed-shadow-x">X</label><input id="ed-shadow-x" type="range" min={-40} max={40} value={shadowX} onChange={(event) => { const next = Number(event.target.value); setShadowX(next); paintShadow({ shadowX: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowX)}</span></div>
-                <div className="ed-line"><label htmlFor="ed-shadow-y">Y</label><input id="ed-shadow-y" type="range" min={-40} max={40} value={shadowY} onChange={(event) => { const next = Number(event.target.value); setShadowY(next); paintShadow({ shadowY: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowY)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-blur">Blur</label><input id="ed-shadow-blur" type="range" min={0} max={sizeMax} value={Math.min(shadowBlur, sizeMax)} onChange={(event) => { const next = Number(event.target.value); setShadowBlur(next); paintShadow({ shadowBlur: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowBlur)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-x">X</label><input id="ed-shadow-x" type="range" min={-sizeMax} max={sizeMax} value={shadowX} onChange={(event) => { const next = Number(event.target.value); setShadowX(next); paintShadow({ shadowX: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowX)}</span></div>
+                <div className="ed-line"><label htmlFor="ed-shadow-y">Y</label><input id="ed-shadow-y" type="range" min={-sizeMax} max={sizeMax} value={shadowY} onChange={(event) => { const next = Number(event.target.value); setShadowY(next); paintShadow({ shadowY: next }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowY)}</span></div>
                 <div className="ed-line"><label htmlFor="ed-shadow-opacity">Opacity</label><input id="ed-shadow-opacity" type="range" min={0} max={100} value={shadowOpacity} onChange={(event) => { const next = Number(event.target.value); setShadowOpacity(next); paintShadow({ shadowOpacity: next / 100 }, true); }} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{Math.round(shadowOpacity)}</span></div>
               </>
             )}
@@ -771,7 +852,7 @@ export function Editor() {
               ))}
             </div>
             {obfuscateMode === "solid" && <ColourChoices label="Colour" value={obfuscate?.color ?? coverColor} onPick={setObfuscateColor} />}
-            {obfuscateMode !== "solid" && <div className="ed-line"><label htmlFor="ed-px">Block size</label><input id="ed-px" type="range" min={4} max={40} value={blockSize} onChange={(event) => setObfuscateBlock(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{blockSize}</span></div>}
+            {obfuscateMode !== "solid" && <div className="ed-line"><label htmlFor="ed-px">Block size</label><input id="ed-px" type="range" min={4} max={sizeMax} value={Math.min(blockSize, sizeMax)} onChange={(event) => setObfuscateBlock(Number(event.target.value))} onPointerUp={endGesture} onKeyUp={endGesture} onBlur={endGesture} /><span>{blockSize}</span></div>}
             <p>Flattened on export. Original pixels are never written to the file.</p>
           </div>}
           {showEffects && <div className="ed-rule" />}
@@ -782,10 +863,10 @@ export function Editor() {
             ))}
           </div>}
           {panel === "text" && <TextPanel lines={textLines} picked={pickedLine} onPick={setPickedLine} onCopy={(asCode) => copyLines(asCode)} />}
-          {panel === "secrets" && <SecretsPanel findings={findings} onDismiss={(id) => api.dismissSecret(id).then(setFindings).catch((err: Error) => setError(err.message))} onRedact={() => api.redactSecrets().then(applyRemote).then(() => api.editorSecrets().then(setFindings)).catch((err: Error) => setError(err.message))} />}
-          {panel === "beautify" && <BeautifyPanel value={beauty} setValue={setBeauty} onApply={() => api.beautify(beauty).then(applyRemote).catch((err: Error) => setError(err.message))} />}
-          {panel === "print" && <PrintPanel fit={printFit} rotate={printRotate} setFit={setPrintFit} setRotate={setPrintRotate} onPrint={() => api.printEditor(printFit, printRotate).catch((err: Error) => setError(err.message))} />}
-          {panel === "open" && <OpenPanel apps={apps} onOpen={(id) => api.openInChoose(id, state?.captureId ?? null).catch((err: Error) => setError(err.message))} />}
+          {panel === "secrets" && <SecretsPanel findings={findings} onDismiss={(id) => api.dismissSecret(id).then(setFindings).catch((err: Error) => setError(err.message))} onRedact={() => api.redactSecrets().then(applyRemote).then(() => api.editorSecrets()).then((next) => { setFindings(next); flash("Redacted"); }).catch((err: Error) => setError(err.message))} />}
+          {panel === "beautify" && <BeautifyPanel value={beauty} sizeMax={sizeMax} setValue={setBeauty} onApply={() => api.beautify(beauty).then((next) => { applyRemote(next); flash("Applied"); }).catch((err: Error) => setError(err.message))} />}
+          {panel === "print" && <PrintPanel fit={printFit} rotate={printRotate} setFit={setPrintFit} setRotate={setPrintRotate} onPrint={() => api.printEditor(printFit, printRotate).then(() => flash("Opening print")).catch((err: Error) => setError(err.message))} />}
+          {panel === "open" && <OpenPanel apps={apps} onOpen={(id) => api.openInChoose(id, state?.captureId ?? null).then(() => flash("Opened")).catch((err: Error) => setError(err.message))} />}
           {error && <p className="error">{error}</p>}
         </aside>
       </div>
@@ -795,6 +876,7 @@ export function Editor() {
         <span>{TOOL_LABEL[tool]} tool: {Object.entries(KEYS).find(([, value]) => value === tool)?.[0].toUpperCase() ?? ""} · Esc to select</span>
         <span className="grow">{preset?.folder?.replace(/^\/Users\/[^/]+/, "~") ?? "Clipboard only"}</span>
       </footer>
+      {toast && <div className="ed-toast" role="status">{toast}</div>}
       {askClose && (
         <div className="dialog">
           <form onSubmit={(event) => { event.preventDefault(); save(false).then(() => window.close()); }}>
@@ -847,13 +929,13 @@ function SecretsPanel({ findings, onDismiss, onRedact }: { findings: SecretFindi
   );
 }
 
-function BeautifyPanel({ value, setValue, onApply }: { value: { scale: number; backdrop: string; padding: number; radius: number; shadow: boolean; frame: boolean; watermark: string }; setValue: (next: typeof value) => void; onApply: () => void }) {
+function BeautifyPanel({ value, sizeMax, setValue, onApply }: { value: { scale: number; backdrop: string; padding: number; radius: number; shadow: boolean; frame: boolean; watermark: string }; sizeMax: number; setValue: (next: typeof value) => void; onApply: () => void }) {
   return (
     <div className="ed-block">
       <span className="ed-kicker">Beautify</span>
       <div className="ed-line"><label htmlFor="beauty-scale">Size</label><input id="beauty-scale" type="range" min={0.5} max={2} step={0.1} value={value.scale} onChange={(event) => setValue({ ...value, scale: Number(event.target.value) })} /><span>{value.scale.toFixed(1)}×</span></div>
-      <div className="ed-line"><label htmlFor="beauty-pad">Padding</label><input id="beauty-pad" type="range" min={0} max={96} value={value.padding} onChange={(event) => setValue({ ...value, padding: Number(event.target.value) })} /><span>{value.padding}</span></div>
-      <div className="ed-line"><label htmlFor="beauty-radius">Radius</label><input id="beauty-radius" type="range" min={0} max={48} value={value.radius} onChange={(event) => setValue({ ...value, radius: Number(event.target.value) })} /><span>{value.radius}</span></div>
+      <div className="ed-line"><label htmlFor="beauty-pad">Padding</label><input id="beauty-pad" type="range" min={0} max={sizeMax} value={Math.min(value.padding, sizeMax)} onChange={(event) => setValue({ ...value, padding: Number(event.target.value) })} /><span>{value.padding}</span></div>
+      <div className="ed-line"><label htmlFor="beauty-radius">Radius</label><input id="beauty-radius" type="range" min={0} max={sizeMax} value={Math.min(value.radius, sizeMax)} onChange={(event) => setValue({ ...value, radius: Number(event.target.value) })} /><span>{value.radius}</span></div>
       <div className="ed-line"><label htmlFor="beauty-back">Backdrop</label><input id="beauty-back" value={value.backdrop} onChange={(event) => setValue({ ...value, backdrop: event.target.value })} /></div>
       <label className="ed-check">Shadow <input type="checkbox" checked={value.shadow} onChange={(event) => setValue({ ...value, shadow: event.target.checked })} /></label>
       <label className="ed-check">Frame <input type="checkbox" checked={value.frame} onChange={(event) => setValue({ ...value, frame: event.target.checked })} /></label>
@@ -922,17 +1004,27 @@ function colorOf(object: AnnotationObject | null): string | null {
   return null;
 }
 
-function applyHandle(object: AnnotationObject, handle: Handle, p: { x: number; y: number }): AnnotationObject {
+function imageCap(document: { width: number; height: number }) {
+  return Math.max(64, document.width, document.height);
+}
+
+function clampSize(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function applyHandle(object: AnnotationObject, handle: Handle, p: { x: number; y: number }, document: { width: number; height: number }): AnnotationObject {
   if (object.type === "line" || object.type === "arrow") {
     if (handle === "start") return { ...object, x1: p.x, y1: p.y };
     if (handle === "end") return { ...object, x2: p.x, y2: p.y };
     return object;
   }
   if (object.type === "freehand") return scalePath(object, handle, p);
-  if (object.type === "text") return resizeText(object, handle, p);
+  const cap = imageCap(document);
+  if (object.type === "text") return resizeText(object, handle, p, cap);
   if (object.type === "counter") {
     const next = resizeBox(object.x, object.y, object.size, object.size, handle, p);
-    return { ...object, x: next.x, y: next.y, size: Math.max(12, Math.max(next.w, next.h)) };
+    return { ...object, x: next.x, y: next.y, size: Math.max(12, Math.min(cap, Math.max(next.w, next.h))) };
   }
   if ("x" in object && "w" in object && "h" in object) {
     const next = resizeBox(object.x, object.y, object.w, object.h, handle, p);
@@ -968,17 +1060,17 @@ function scalePath(object: Extract<AnnotationObject, { type: "freehand" }>, hand
   };
 }
 
-function resizeText(object: Extract<AnnotationObject, { type: "text" }>, handle: Handle, p: { x: number; y: number }): AnnotationObject {
+function resizeText(object: Extract<AnnotationObject, { type: "text" }>, handle: Handle, p: { x: number; y: number }, cap: number): AnnotationObject {
   const top = object.y - object.size;
   const south = handle === "s" || handle === "se" || handle === "sw";
   const north = handle === "n" || handle === "ne" || handle === "nw";
   const west = handle === "w" || handle === "nw" || handle === "sw";
   if (south) {
-    const size = Math.max(10, Math.min(160, p.y - top));
+    const size = Math.max(10, Math.min(cap, p.y - top));
     return { ...object, size, y: top + size, x: west ? p.x : object.x };
   }
   if (north) {
-    const size = Math.max(10, Math.min(160, object.y - p.y));
+    const size = Math.max(10, Math.min(cap, object.y - p.y));
     return { ...object, size, x: west ? p.x : object.x };
   }
   if (west) return { ...object, x: p.x };

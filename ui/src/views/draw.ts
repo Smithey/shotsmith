@@ -35,6 +35,13 @@ export function drawDocument(
     ctx.strokeStyle = "#0A84FF";
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 3]);
+    if (object.type === "counter" && box) {
+      ctx.beginPath();
+      ctx.arc(panX + (box.x + box.w / 2) * zoom, panY + (box.y + box.h / 2) * zoom, (box.w / 2) * zoom + 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
     if (box) ctx.strokeRect(panX + box.x * zoom, panY + box.y * zoom, box.w * zoom, box.h * zoom);
     ctx.setLineDash([]);
     ctx.fillStyle = "#ffffff";
@@ -257,6 +264,7 @@ export function drawCrop(
 export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "start" | "end";
 
 export function handles(object: AnnotationObject): { id: Handle; x: number; y: number }[] {
+  if (object.type === "counter") return [];
   if (object.type === "line" || object.type === "arrow") {
     return [
       { id: "start", x: object.x1, y: object.y1 },
@@ -333,23 +341,37 @@ function drawObject(ctx: CanvasRenderingContext2D, object: AnnotationObject, edi
   switch (object.type) {
     case "rect":
       ctx.globalAlpha = object.opacity;
-      if (object.shadow) shadow(ctx, object);
+      if (object.shadow) {
+        castOuterShadow(ctx, object, (g) => {
+          roundRect(g, object.x, object.y, object.w, object.h, object.radius);
+          g.fillStyle = "#000";
+          g.fill();
+        });
+      }
       roundRect(ctx, object.x, object.y, object.w, object.h, object.radius);
       paint(ctx, object.fill, object.stroke, object.strokeWidth);
       break;
     case "ellipse":
       ctx.globalAlpha = object.opacity;
-      if (object.shadow) shadow(ctx, object);
+      if (object.shadow) {
+        castOuterShadow(ctx, object, (g) => {
+          g.beginPath();
+          g.ellipse(object.x + object.w / 2, object.y + object.h / 2, Math.abs(object.w) / 2, Math.abs(object.h) / 2, 0, 0, Math.PI * 2);
+          g.fillStyle = "#000";
+          g.fill();
+        });
+      }
       ctx.beginPath();
       ctx.ellipse(object.x + object.w / 2, object.y + object.h / 2, Math.abs(object.w) / 2, Math.abs(object.h) / 2, 0, 0, Math.PI * 2);
       paint(ctx, object.fill, object.stroke, object.strokeWidth);
       break;
     case "line":
-      if (object.shadow) shadow(ctx, object);
+      if (object.shadow) {
+        castOuterShadow(ctx, object, (g) => line(g, object.x1, object.y1, object.x2, object.y2, "#000", object.strokeWidth, true));
+      }
       line(ctx, object.x1, object.y1, object.x2, object.y2, object.stroke, object.strokeWidth, true);
       break;
     case "arrow": {
-      if (object.shadow) shadow(ctx, object);
       const dx = object.x2 - object.x1;
       const dy = object.y2 - object.y1;
       const len = Math.hypot(dx, dy) || 1;
@@ -360,6 +382,13 @@ function drawObject(ctx: CanvasRenderingContext2D, object: AnnotationObject, edi
       const y2 = end ? object.y2 - (dy / len) * inset : object.y2;
       const x1 = both ? object.x1 + (dx / len) * inset : object.x1;
       const y1 = both ? object.y1 + (dy / len) * inset : object.y1;
+      if (object.shadow) {
+        castOuterShadow(ctx, object, (g) => {
+          line(g, x1, y1, x2, y2, "#000", object.strokeWidth, false);
+          head(g, object.x2, object.y2, dx, dy, "#000", object.strokeWidth);
+          if (both) head(g, object.x1, object.y1, -dx, -dy, "#000", object.strokeWidth);
+        });
+      }
       line(ctx, x1, y1, x2, y2, object.stroke, object.strokeWidth, false);
       head(ctx, object.x2, object.y2, dx, dy, object.stroke, object.strokeWidth);
       if (both) head(ctx, object.x1, object.y1, -dx, -dy, object.stroke, object.strokeWidth);
@@ -504,11 +533,46 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.roundRect(x, y, w, h, radius);
 }
 
-function shadow(ctx: CanvasRenderingContext2D, object: { shadowBlur: number; shadowX: number; shadowY: number; shadowOpacity: number }) {
-  ctx.shadowColor = `rgba(0,0,0,${object.shadowOpacity})`;
-  ctx.shadowBlur = object.shadowBlur;
-  ctx.shadowOffsetX = object.shadowX;
-  ctx.shadowOffsetY = object.shadowY;
+let shadowLayer: HTMLCanvasElement | null = null;
+
+function shadowCanvas(width: number, height: number) {
+  if (!shadowLayer) shadowLayer = document.createElement("canvas");
+  if (shadowLayer.width !== width || shadowLayer.height !== height) {
+    shadowLayer.width = width;
+    shadowLayer.height = height;
+  }
+  return shadowLayer;
+}
+
+function castOuterShadow(
+  ctx: CanvasRenderingContext2D,
+  object: { shadowBlur: number; shadowX: number; shadowY: number; shadowOpacity: number },
+  mark: (ctx: CanvasRenderingContext2D) => void,
+) {
+  if (object.shadowOpacity <= 0) return;
+  const layer = shadowCanvas(ctx.canvas.width, ctx.canvas.height);
+  const g = layer.getContext("2d");
+  if (!g) return;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1;
+  g.globalCompositeOperation = "source-over";
+  g.shadowColor = "rgba(0,0,0,0)";
+  g.shadowBlur = 0;
+  g.shadowOffsetX = 0;
+  g.shadowOffsetY = 0;
+  g.clearRect(0, 0, layer.width, layer.height);
+  g.shadowColor = `rgba(0,0,0,${object.shadowOpacity})`;
+  g.shadowBlur = object.shadowBlur;
+  g.shadowOffsetX = object.shadowX;
+  g.shadowOffsetY = object.shadowY;
+  mark(g);
+  g.shadowColor = "rgba(0,0,0,0)";
+  g.shadowBlur = 0;
+  g.shadowOffsetX = 0;
+  g.shadowOffsetY = 0;
+  g.globalCompositeOperation = "destination-out";
+  mark(g);
+  ctx.drawImage(layer, 0, 0);
 }
 
 export function hitCenter(doc: Document, x: number, y: number, zoom: number): string | null {
