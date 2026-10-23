@@ -1,0 +1,77 @@
+# Pushing to main builds a macOS release and attaches it to GitHub Releases.
+# Signing and notarization run only when the Apple secrets in the README are set.
+# Without them the disk image is ad-hoc signed and other Macs will refuse it.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Choose the signing config
+        id: signing
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            python3 - <<'PY'
+          import json, os
+          json.dump({
+              "bundle": {
+                  "macOS": {
+                      "signingIdentity": os.environ["APPLE_SIGNING_IDENTITY"],
+                      "hardenedRuntime": True,
+                  }
+              }
+          }, open("release-config.json", "w"))
+          PY
+            echo "TAURI_ARGS=--target aarch64-apple-darwin --config release-config.json" >> "$GITHUB_ENV"
+            echo "note<<EOF" >> "$GITHUB_OUTPUT"
+            echo "This build is signed with a Developer ID and notarized." >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "TAURI_ARGS=--target aarch64-apple-darwin" >> "$GITHUB_ENV"
+            echo "note<<EOF" >> "$GITHUB_OUTPUT"
+            echo "This build is not notarized. Other Macs will refuse it until the Apple signing secrets are set. See the README." >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: app
+          tagName: v__VERSION__-build.${{ github.run_number }}
+          releaseName: Shotsmith v__VERSION__
+          releaseBody: |
+            macOS 14 or newer. Apple silicon.
+
+            ${{ steps.signing.outputs.note }}
+          releaseDraft: false
+          prerelease: false
+          args: ${{ env.TAURI_ARGS }}
