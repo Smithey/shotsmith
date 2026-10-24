@@ -26,11 +26,7 @@ pub fn encode(image: &RgbaImage, format: ImageFormat, quality: f32) -> Result<Ve
     match format {
         ImageFormat::Png => encode_png(image),
         ImageFormat::Jpeg => encode_jpeg(image, quality),
-        ImageFormat::Webp => encode_with(image, |buf, img| {
-            image::codecs::webp::WebPEncoder::new_lossless(buf)
-                .write_image(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgba8)
-                .map_err(|err| OutputError::Message(err.to_string()))
-        }),
+        ImageFormat::Webp => encode_webp(image, quality),
         ImageFormat::Tiff => encode_with(image, |buf, img| {
             image::codecs::tiff::TiffEncoder::new(buf)
                 .write_image(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgba8)
@@ -57,8 +53,14 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), OutputError> {
 }
 
 pub fn write_shotsmith(path: &Path, doc: &Document, original_png: &[u8]) -> Result<(), OutputError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|err| OutputError::Message(err.to_string()))?;
+        }
+    }
+    let tmp = path.with_extension("shotsmith.part");
     let json = serde_json::to_vec_pretty(doc).map_err(|err| OutputError::Message(err.to_string()))?;
-    let file = std::fs::File::create(path).map_err(|err| OutputError::Message(err.to_string()))?;
+    let file = std::fs::File::create(&tmp).map_err(|err| OutputError::Message(err.to_string()))?;
     let mut zip = ZipWriter::new(file);
     let json_options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let png_options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -70,7 +72,22 @@ pub fn write_shotsmith(path: &Path, doc: &Document, original_png: &[u8]) -> Resu
     std::io::Write::write_all(&mut zip, original_png)
         .map_err(|err| OutputError::Message(err.to_string()))?;
     zip.finish().map_err(|err| OutputError::Message(err.to_string()))?;
+    std::fs::rename(&tmp, path).map_err(|err| OutputError::Message(err.to_string()))?;
     Ok(())
+}
+
+fn encode_webp(image: &RgbaImage, quality: f32) -> Result<Vec<u8>, OutputError> {
+    if quality >= 1.0 {
+        return encode_with(image, |buf, img| {
+            image::codecs::webp::WebPEncoder::new_lossless(buf)
+                .write_image(img.as_raw(), img.width(), img.height(), ExtendedColorType::Rgba8)
+                .map_err(|err| OutputError::Message(err.to_string()))
+        });
+    }
+    let q = (quality.clamp(0.0, 1.0) * 100.0).round();
+    Ok(webp::Encoder::from_rgba(image.as_raw(), image.width(), image.height())
+        .encode(q)
+        .to_vec())
 }
 
 pub fn read_shotsmith(path: &Path) -> Result<(Document, Vec<u8>), OutputError> {

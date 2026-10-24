@@ -31,6 +31,9 @@ pub struct CaptureRecord {
     pub pinned: bool,
     #[serde(default)]
     pub ocr_text: Option<String>,
+    /// Hidden from History while "Keep history" is off. The wheel can still open it.
+    #[serde(default)]
+    pub ephemeral: bool,
     /// Flattened thumbnail written beside the original. Not stored in the database.
     #[serde(default)]
     pub preview_path: Option<String>,
@@ -64,14 +67,15 @@ impl HistoryDb {
             );",
         )?;
         let _ = conn.execute("ALTER TABLE captures ADD COLUMN ocr_text TEXT", []);
+        let _ = conn.execute("ALTER TABLE captures ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0", []);
         Ok(Self { conn })
     }
 
     pub fn insert(&self, record: &CaptureRecord) -> Result<(), HistoryError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO captures
-            (id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            (id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 record.id,
                 record.date,
@@ -85,6 +89,7 @@ impl HistoryDb {
                 record.document_path,
                 record.pinned as i32,
                 record.ocr_text,
+                record.ephemeral as i32,
             ],
         )?;
         Ok(())
@@ -92,27 +97,27 @@ impl HistoryDb {
 
     pub fn list(&self, limit: u32) -> Result<Vec<CaptureRecord>, HistoryError> {
         self.query(
-            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
-             FROM captures ORDER BY date DESC LIMIT ?1",
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral
+             FROM captures WHERE ephemeral = 0 ORDER BY date DESC LIMIT ?1",
             [limit],
         )
     }
 
-    pub fn search(&self, query: &str) -> Result<Vec<CaptureRecord>, HistoryError> {
+    pub fn search(&self, query: &str, limit: u32) -> Result<Vec<CaptureRecord>, HistoryError> {
         let like = format!("%{}%", query.replace('%', ""));
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral
              FROM captures
-             WHERE source_app LIKE ?1 OR window_title LIKE ?1 OR date LIKE ?1 OR ocr_text LIKE ?1
-             ORDER BY date DESC LIMIT 200",
+             WHERE ephemeral = 0 AND (source_app LIKE ?1 OR window_title LIKE ?1 OR date LIKE ?1 OR ocr_text LIKE ?1)
+             ORDER BY date DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![like], row_to_record)?;
+        let rows = stmt.query_map(params![like, limit], row_to_record)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<CaptureRecord>, HistoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral
              FROM captures WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![id])?;
@@ -130,11 +135,27 @@ impl HistoryDb {
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), HistoryError> {
-        self.conn.execute(
-            "UPDATE captures SET pinned = ?1 WHERE id = ?2",
-            params![pinned as i32, id],
-        )?;
+        if pinned {
+            self.conn.execute(
+                "UPDATE captures SET pinned = 1, ephemeral = 0 WHERE id = ?1",
+                params![id],
+            )?;
+        } else {
+            self.conn.execute("UPDATE captures SET pinned = 0 WHERE id = ?1", params![id])?;
+        }
         Ok(())
+    }
+
+    /// Rows kept only for the wheel while history is off. The caller deletes the files.
+    pub fn take_ephemeral(&self) -> Result<Vec<CaptureRecord>, HistoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral
+             FROM captures WHERE ephemeral = 1",
+        )?;
+        let rows = stmt.query_map([], row_to_record)?;
+        let records = rows.collect::<Result<Vec<_>, _>>()?;
+        self.conn.execute("DELETE FROM captures WHERE ephemeral = 1", [])?;
+        Ok(records)
     }
 
     pub fn set_ocr(&self, id: &str, text: &str) -> Result<(), HistoryError> {
@@ -155,18 +176,16 @@ impl HistoryDb {
 
     pub fn prune(&self, keep: u32, days: u32) -> Result<Vec<CaptureRecord>, HistoryError> {
         let mut doomed = Vec::new();
-        if keep > 0 {
-            let extra = self.query(
-                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
-                 FROM captures WHERE pinned = 0 ORDER BY date DESC LIMIT -1 OFFSET ?1",
-                [keep],
-            )?;
-            doomed.extend(extra);
-        }
+        let extra = self.query(
+            "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral
+             FROM captures WHERE pinned = 0 AND ephemeral = 0 ORDER BY date DESC LIMIT -1 OFFSET ?1",
+            [keep],
+        )?;
+        doomed.extend(extra);
         if days > 0 {
             let old = self.conn.prepare(
-                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text
-                 FROM captures WHERE pinned = 0 AND julianday(date) < julianday('now') - ?1",
+                "SELECT id, date, mode, source_app, window_title, pixel_width, pixel_height, scale, original_path, document_path, pinned, ocr_text, ephemeral
+                 FROM captures WHERE pinned = 0 AND ephemeral = 0 AND julianday(date) < julianday('now') - ?1",
             );
             if let Ok(mut stmt) = old {
                 let rows = stmt.query_map(params![days], row_to_record)?;
@@ -204,6 +223,7 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureRecord> {
         document_path: row.get(9)?,
         pinned: row.get::<_, i32>(10)? != 0,
         ocr_text: row.get(11)?,
+        ephemeral: row.get::<_, i32>(12)? != 0,
         preview_path: None,
         preview_rev: 0,
     })
@@ -220,9 +240,25 @@ mod tests {
         let db = HistoryDb::open(&dir.join("history.db")).unwrap();
         db.insert(&sample("1", "Safari", "Inbox")).unwrap();
         db.insert(&sample("2", "Mail", "Draft")).unwrap();
-        assert_eq!(db.search("Safari").unwrap().len(), 1);
+        assert_eq!(db.search("Safari", 10).unwrap().len(), 1);
         db.set_pinned("1", true).unwrap();
         assert!(db.get("1").unwrap().unwrap().pinned);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prune_zero_removes_every_unpinned_row() {
+        let dir = std::env::temp_dir().join(format!("shotsmith-history-prune-{}", uuid_ish()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = HistoryDb::open(&dir.join("history.db")).unwrap();
+        db.insert(&sample("1", "Safari", "Inbox")).unwrap();
+        let mut pinned = sample("2", "Mail", "Draft");
+        pinned.pinned = true;
+        db.insert(&pinned).unwrap();
+        let removed = db.prune(0, 0).unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, "1");
+        assert!(db.list(10).unwrap().iter().all(|item| item.id == "2"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -240,6 +276,7 @@ mod tests {
             document_path: None,
             pinned: false,
             ocr_text: None,
+            ephemeral: false,
             preview_path: None,
             preview_rev: 0,
         }

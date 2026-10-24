@@ -10,9 +10,8 @@ use tiny_skia::{
 
 pub fn render(image: &RgbaImage, doc: &Document, effects: &[Effect]) -> RgbaImage {
     let mut pixmap = image_to_pixmap(image);
-    let base = pixmap.clone();
     for object in &doc.objects {
-        draw_object(&mut pixmap, &base, object);
+        draw_object(&mut pixmap, object);
     }
     apply_effects(&mut pixmap, effects);
     pixmap_to_image(&pixmap)
@@ -26,7 +25,7 @@ pub fn crop_image(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> RgbaImag
     image::imageops::crop_imm(image, x, y, w, h).to_image()
 }
 
-fn draw_object(pixmap: &mut Pixmap, base: &Pixmap, object: &AnnotationObject) {
+fn draw_object(pixmap: &mut Pixmap, object: &AnnotationObject) {
     match object {
         AnnotationObject::Rect(o) => {
             shadow_rect(pixmap, o.x, o.y, o.w, o.h, o.radius, shade(o.shadow, o.shadow_blur, o.shadow_x, o.shadow_y, o.shadow_opacity));
@@ -124,7 +123,11 @@ fn draw_object(pixmap: &mut Pixmap, base: &Pixmap, object: &AnnotationObject) {
         AnnotationObject::Highlight(o) => draw_highlight(pixmap, o),
         AnnotationObject::Obfuscate(o) => draw_obfuscate(pixmap, o),
         AnnotationObject::Image(o) | AnnotationObject::Cursor(o) => draw_embedded(pixmap, o),
-        AnnotationObject::Magnify(o) => draw_magnify(pixmap, base, o),
+        AnnotationObject::Magnify(o) => {
+            // Sample the picture so far, so a redaction drawn earlier stays covered.
+            let sample = pixmap.clone();
+            draw_magnify(pixmap, &sample, o);
+        }
     }
 }
 
@@ -1168,5 +1171,37 @@ mod tests {
         let block = out.get_pixel(0, 0).0;
         assert_eq!(out.get_pixel(1, 0).0, block);
         assert_ne!(block, image.get_pixel(0, 0).0);
+    }
+
+    #[test]
+    fn magnify_does_not_reveal_a_redaction() {
+        let image = RgbaImage::from_pixel(32, 32, Rgba([255, 0, 0, 255]));
+        let doc = Document {
+            version: 1,
+            width: 32,
+            height: 32,
+            objects: vec![
+                AnnotationObject::Obfuscate(ObfuscateObject {
+                    id: "o".into(),
+                    x: 8.0,
+                    y: 8.0,
+                    w: 16.0,
+                    h: 16.0,
+                    mode: ObfuscateMode::Solid,
+                    block_size: 8,
+                    color: "#000000".into(),
+                }),
+                AnnotationObject::Magnify(MagnifyObject {
+                    id: "m".into(),
+                    x: 8.0,
+                    y: 8.0,
+                    w: 16.0,
+                    h: 16.0,
+                    factor: 2.0,
+                }),
+            ],
+        };
+        let out = render(&image, &doc, &[]);
+        assert_eq!(out.get_pixel(16, 16).0, [0, 0, 0, 255]);
     }
 }

@@ -28,7 +28,7 @@ Releases also include a Windows 11 64-bit installer. That build is not Authentic
 
 - **Capture.** Region, window, full screen, scrolling, repeat the last region, and a timer. A loupe helps line up the region. Copy text from a region. Measure an element, or the distance between two clicks.
 - **Donut.** After a capture, a wheel at the cursor can copy, save, share, print, open the editor, or pin. VoiceOver and Narrator get the same actions as a normal menu.
-- **Editor.** Select, crop, arrow, rectangle, ellipse, line, freehand, text, callout, step counter, highlight, obfuscate, magnify, and an eyedropper. Shapes stay editable after you place them, including after you close the window. Undo and redo. Copy, Save PNG, and Save As. Selectable text, copy as code, and Look Up on Mac.
+- **Editor.** Select, crop, arrow, rectangle, ellipse, line, freehand, text, step counter, highlight, obfuscate, magnify, and an eyedropper. Shapes stay editable after you place them, including after you close the window. Undo and redo. Copy, Save PNG, and Save As. Selectable text, copy as code, and Look Up on Mac.
 - **Obfuscate.** Pixelate, blur, or a solid block, drawn by hand. A scan can mark emails, phone numbers, addresses, card numbers, IBANs, and API keys. You redact the ones you keep.
 - **Beautify.** Size, backdrop, frame, padding, radius, shadow, and a plain text watermark.
 - **Presets.** Format, scale, folder, and a file name pattern. The default preset is what Save uses.

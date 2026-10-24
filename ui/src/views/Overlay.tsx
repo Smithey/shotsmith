@@ -278,7 +278,6 @@ export function Overlay() {
       )}
       {shown && (
         <div className="shade" style={{ left: shown.x / scale, top: shown.y / scale, width: shown.w / scale, height: shown.h / scale }}>
-          {["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((handle) => <i key={handle} className={`handle ${handle}`} />)}
           <div className="size-label" style={{ top: shown.y / scale < 40 ? 8 : -36, left: 0 }}>
             {Math.round(shown.w / scale)} × {Math.round(shown.h / scale)} pt
             <br />
@@ -335,8 +334,12 @@ function normalize(rect: Rect): Rect {
   };
 }
 
+let shutter: AudioContext | null = null;
+
 function beep() {
-  const ctx = new AudioContext();
+  if (!shutter) shutter = new AudioContext();
+  const ctx = shutter;
+  if (ctx.state === "suspended") void ctx.resume();
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.frequency.value = 880;

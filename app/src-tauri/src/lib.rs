@@ -24,6 +24,13 @@ pub fn run() {
     let presets = load_presets(&root);
     let history =
         shotsmith_history::HistoryDb::open(&root.join("history.db")).expect("history database");
+    if let Ok(stale) = history.take_ephemeral() {
+        for record in stale {
+            if let Some(parent) = std::path::Path::new(&record.original_path).parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+    }
 
     tauri::Builder::default()
         .enable_macos_default_menu(false)

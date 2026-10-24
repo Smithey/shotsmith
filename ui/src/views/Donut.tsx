@@ -12,10 +12,14 @@ export function Donut() {
   const [error, setError] = useState("");
   const stateRef = useRef<DonutState | null>(null);
   const busy = useRef(false);
+  const flicked = useRef(false);
   stateRef.current = state;
 
   useEffect(() => {
-    const load = () => api.donut().then(setState).catch((err: Error) => setError(err.message));
+    const load = () => {
+      busy.current = false;
+      api.donut().then(setState).catch((err: Error) => setError(err.message));
+    };
     load();
     let stop = () => {};
     onRefresh(load).then((un) => { stop = un; });
@@ -36,9 +40,9 @@ export function Donut() {
     busy.current = true;
     api.donutAct(action, keepOpen).catch((err: Error) => {
       setError(err.message);
+    }).finally(() => {
       busy.current = false;
     });
-    if (keepOpen) busy.current = false;
   }
 
   if (!state) return <p className="error donut-status">{error || "Opening the donut…"}</p>;
@@ -62,7 +66,11 @@ export function Donut() {
         const [x, y, t] = start.split(",").map(Number);
         const dx = event.clientX - x;
         const dy = event.clientY - y;
-        if (Math.hypot(dx, dy) > 40 && performance.now() - t < 300) act(state.slots[hover].id, event.shiftKey);
+        if (Math.hypot(dx, dy) > 40 && performance.now() - t < 300) {
+          flicked.current = true;
+          act(state.slots[hover].id, event.shiftKey);
+          setTimeout(() => { flicked.current = false; }, 0);
+        }
       }}
     >
       <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE}>
@@ -74,7 +82,14 @@ export function Donut() {
           const path = ring(CENTER, CENTER, INNER, OUTER - 2, a0, a1);
           const labelAt = polar(CENTER, CENTER, 102, (a0 + a1) / 2);
           return (
-            <g key={slot.id} onClick={(event) => { event.stopPropagation(); act(slot.id, event.shiftKey); }}>
+            <g key={slot.id} onClick={(event) => {
+              event.stopPropagation();
+              if (flicked.current) {
+                flicked.current = false;
+                return;
+              }
+              act(slot.id, event.shiftKey);
+            }}>
               <path d={path} fill={index === hover ? "var(--accent)" : "rgba(28,28,30,0.92)"} stroke="rgba(255,255,255,0.10)" />
               <text x={labelAt.x} y={labelAt.y} fill="white" fontSize="13" textAnchor="middle">{slot.label}</text>
               <text x={labelAt.x} y={labelAt.y + 14} fill="rgba(255,255,255,0.72)" fontSize="11" textAnchor="middle">{slot.key}{index === 0 ? "  ↩" : ""}</text>

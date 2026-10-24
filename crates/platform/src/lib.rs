@@ -9,8 +9,8 @@ use xcap::Monitor;
 use xcap::Window;
 
 pub use input::{
-    app_pid_at, element_bounds, installed_apps, lookup_text, open_with, print_file_windows,
-    screen_reader_active, scroll_at, share_file_windows, AppChoice,
+    app_pid_at, element_bounds, installed_apps, lookup_text, move_cursor, open_with,
+    print_file_windows, screen_reader_active, scroll_at, share_file_windows, AppChoice,
 };
 
 #[derive(Debug, Error)]

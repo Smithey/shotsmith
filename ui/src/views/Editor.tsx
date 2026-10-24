@@ -4,7 +4,7 @@ import type { Effect } from "../bindings/Effect";
 import { isMac } from "../keys";
 import { bounds, drawCrop, drawDocument, hitCenter, hitHandle, hitsBox, hitTest, idOf, whenBitmapsLoad, type Handle } from "./draw";
 
-type Tool = "select" | "crop" | "arrow" | "rect" | "ellipse" | "line" | "freehand" | "text" | "callout" | "counter" | "highlight" | "obfuscate" | "magnify" | "eyedropper";
+type Tool = "select" | "crop" | "arrow" | "rect" | "ellipse" | "line" | "freehand" | "text" | "counter" | "highlight" | "obfuscate" | "magnify" | "eyedropper";
 
 const COLOR_NAME: Record<string, string> = {
   "#FF3B30": "Red",
@@ -17,10 +17,10 @@ const COLOR_NAME: Record<string, string> = {
 };
 
 const KEYS: Record<string, Tool> = {
-  v: "select", c: "crop", a: "arrow", r: "rect", e: "ellipse", l: "line", f: "freehand", t: "text", b: "callout", n: "counter", h: "highlight", o: "obfuscate", m: "magnify", i: "eyedropper",
+  v: "select", c: "crop", a: "arrow", r: "rect", e: "ellipse", l: "line", f: "freehand", t: "text", n: "counter", h: "highlight", o: "obfuscate", m: "magnify", i: "eyedropper",
 };
 const TOOL_LABEL: Record<Tool, string> = {
-  select: "Select", crop: "Crop", arrow: "Arrow", rect: "Rectangle", ellipse: "Ellipse", line: "Line", freehand: "Freehand", text: "Text", callout: "Text", counter: "Step counter", highlight: "Highlight", obfuscate: "Obfuscate", magnify: "Magnify", eyedropper: "Eyedropper",
+  select: "Select", crop: "Crop", arrow: "Arrow", rect: "Rectangle", ellipse: "Ellipse", line: "Line", freehand: "Freehand", text: "Text", counter: "Step counter", highlight: "Highlight", obfuscate: "Obfuscate", magnify: "Magnify", eyedropper: "Eyedropper",
 };
 const LATER = new Set<Tool>([]);
 const SHADOW = { shadowBlur: 8, shadowX: 0, shadowY: 3, shadowOpacity: 0.35 };
@@ -398,7 +398,7 @@ export function Editor() {
       drag.current = { mode: "move", x: p.x, y: p.y, ids: [center], moved: false };
       return;
     }
-    if (tool === "text" || tool === "callout") {
+    if (tool === "text") {
       const object: AnnotationObject = {
         type: "text",
         id: uid(),
@@ -407,7 +407,7 @@ export function Editor() {
         text: "",
         size: textSize,
         color: stroke,
-        fill: tool === "callout" ? (fill === "none" ? "#FFFFFF" : fill) : fill,
+        fill,
         bold: true,
       };
       commit({ ...current, objects: [...current.objects, object] });
@@ -632,11 +632,11 @@ export function Editor() {
   const shownWeight = strokeWidth;
   const shownSize = textSize;
   const sizeMax = doc ? imageCap(doc) : 512;
-  const showText = selectedObject ? selectedObject.type === "text" : tool === "text" || tool === "callout";
+  const showText = selectedObject ? selectedObject.type === "text" : tool === "text";
   const showFill = showText || (selectedObject ? selectedObject.type === "rect" || selectedObject.type === "ellipse" : tool === "rect" || tool === "ellipse");
   const showWeight = selectedObject ? "strokeWidth" in selectedObject : ["arrow", "rect", "ellipse", "line", "freehand"].includes(tool);
   const showObfuscate = selectedObject ? selectedObject.type === "obfuscate" : tool === "obfuscate";
-  const showColor = selectedObject ? selectedObject.type !== "obfuscate" && colorOf(selectedObject) != null : ["arrow", "rect", "ellipse", "line", "freehand", "text", "callout", "counter", "highlight"].includes(tool);
+  const showColor = selectedObject ? selectedObject.type !== "obfuscate" && colorOf(selectedObject) != null : ["arrow", "rect", "ellipse", "line", "freehand", "text", "counter", "highlight"].includes(tool);
   const showMagnify = selectedObject?.type === "magnify";
   const showShape = showColor || showText || showWeight || showFill || showMagnify || (selectedObject != null && "shadow" in selectedObject);
   const showEffects = !selectedObject && tool === "select";
@@ -765,7 +765,7 @@ export function Editor() {
           <ToolButton id="select" tool={tool} setTool={setTool} />
           <ToolButton id="crop" tool={tool} setTool={setTool} />
           <span className="ed-gap" />
-          {(["arrow", "rect", "ellipse", "line", "freehand", "text", "callout", "counter"] as Tool[]).map((id) => <ToolButton key={id} id={id} tool={tool} setTool={setTool} />)}
+          {(["arrow", "rect", "ellipse", "line", "freehand", "text", "counter"] as Tool[]).map((id) => <ToolButton key={id} id={id} tool={tool} setTool={setTool} />)}
           <span className="ed-gap" />
           {(["highlight", "obfuscate", "magnify", "eyedropper"] as Tool[]).map((id) => <ToolButton key={id} id={id} tool={tool} setTool={setTool} />)}
         </div>
@@ -1244,7 +1244,6 @@ function Icon({ name }: { name: string }) {
       {name === "line" && <path {...common} d="M5 19L19 5" />}
       {name === "freehand" && <path {...common} d="M3 16c3-7 5 2 8-3s5-6 10-3" />}
       {name === "text" && <path {...common} d="M5 6V4h14v2M12 4v16M9 20h6" />}
-      {name === "callout" && <path {...common} d="M4 5h16v11H10l-4 4v-4H4z" />}
       {name === "counter" && <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M11 9l2-1v8" /></>}
       {name === "highlight" && <path {...common} d="M9 15l-4 4h6l1-1M9 15l8-8 3 3-8 8z" />}
       {name === "obfuscate" && <g fill="currentColor"><rect x="4" y="4" width="5" height="5" /><rect x="15" y="4" width="5" height="5" /><rect x="9.5" y="9.5" width="5" height="5" /><rect x="4" y="15" width="5" height="5" /><rect x="15" y="15" width="5" height="5" /></g>}

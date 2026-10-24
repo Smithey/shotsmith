@@ -9,5 +9,6 @@ publish.workspace = true
 shotsmith-core = { workspace = true }
 serde_json = { workspace = true }
 image = { workspace = true }
+webp = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 thiserror = { workspace = true }

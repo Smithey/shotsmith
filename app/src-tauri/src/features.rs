@@ -105,7 +105,7 @@ pub(crate) fn block_secrets(state: &State<AppState>, id: &str) -> Result<(), Str
     if !warn {
         return Ok(());
     }
-    let findings = findings_for(state, id).unwrap_or_default();
+    let findings = findings_for(state, id)?;
     if findings.iter().any(|item| item.kind.serious()) {
         return Err("A card number or key is still visible. Redact it in the editor, or turn the warning off in Settings.".into());
     }
@@ -113,6 +113,22 @@ pub(crate) fn block_secrets(state: &State<AppState>, id: &str) -> Result<(), Str
 }
 
 pub(crate) fn scroll_capture(
+    app: &AppHandle,
+    state: &State<AppState>,
+    display_id: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    first: RgbaImage,
+) -> Result<RgbaImage, String> {
+    let saved = shotsmith_platform::cursor_position();
+    let result = scroll_pages(app, state, display_id, x, y, width, height, first);
+    let _ = shotsmith_platform::move_cursor(saved.0, saved.1);
+    result
+}
+
+fn scroll_pages(
     app: &AppHandle,
     state: &State<AppState>,
     display_id: u32,
@@ -464,14 +480,9 @@ pub fn open_in_choose(
     let capture_id = capture_id
         .or(state.open_in_id.lock().map_err(err_string)?.clone())
         .ok_or("No capture is waiting.")?;
-    let record = state
-        .history
-        .lock()
-        .map_err(err_string)?
-        .get(&capture_id)
-        .map_err(err_string)?;
-    let record = record.ok_or("That capture is no longer in History.")?;
-    shotsmith_platform::open_with(&app_id, Path::new(&record.original_path)).map_err(err_string)?;
+    let image = commands::visible_image(&state, &capture_id)?;
+    let path = write_temp(&image)?;
+    shotsmith_platform::open_with(&app_id, &path).map_err(err_string)?;
     {
         let mut settings = state.settings.lock().map_err(err_string)?;
         settings.recent_apps.retain(|item| item != &app_id);
@@ -664,21 +675,10 @@ fn plugin_command(root: &Path, id: &str) -> Result<String, String> {
 
 fn findings_for(state: &State<AppState>, id: &str) -> Result<Vec<Finding>, String> {
     let path = image_path(state, id)?;
-    let lines = if let Some(lines) = read_lines(&lines_path(&path))? {
-        lines
-    } else {
-        let image = image::open(&path).map_err(err_string)?.to_rgba8();
-        let lines = shotsmith_ocr::recognize(&image).map_err(err_string)?;
-        store_lines(Path::new(&path), &lines)?;
-        let text = plain_text(&lines);
-        state
-            .history
-            .lock()
-            .map_err(err_string)?
-            .set_ocr(id, &text)
-            .map_err(err_string)?;
-        lines
-    };
+    // The warning looks at the picture about to leave the app. A black box is
+    // only an annotation, so the original file still contains the secret.
+    let image = commands::visible_image(state, id)?;
+    let lines = shotsmith_ocr::recognize(&image).map_err(err_string)?;
     let dismissed = read_strings(&dismissed_path(&path))?.unwrap_or_default();
     Ok(scan(&lines, &dismissed))
 }

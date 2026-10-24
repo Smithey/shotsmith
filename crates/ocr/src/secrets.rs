@@ -62,12 +62,75 @@ struct Hit {
 
 fn hits(text: &str) -> Vec<Hit> {
     let mut found = Vec::new();
+    for run in card_runs(text) {
+        found.push(Hit { kind: SecretKind::Card, text: run });
+    }
+    for run in phone_runs(text) {
+        let digits = digits_only(&run);
+        let covered = found.iter().any(|hit| hit.kind == SecretKind::Card && digits_only(&hit.text) == digits);
+        if !covered {
+            found.push(Hit { kind: SecretKind::Phone, text: run });
+        }
+    }
     for token in tokens(text) {
         if let Some(kind) = classify(&token) {
+            if matches!(kind, SecretKind::Card | SecretKind::Phone) {
+                continue;
+            }
             found.push(Hit { kind, text: token });
         }
     }
     found
+}
+
+fn digits_only(text: &str) -> String {
+    text.chars().filter(|ch| ch.is_ascii_digit()).collect()
+}
+
+/// Digits joined across spaces and dashes, so "4242 4242 4242 4242" is one card.
+fn card_runs(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == ' ' || chars[i] == '-') {
+            i += 1;
+        }
+        let raw: String = chars[start..i].iter().collect();
+        let raw = raw.trim().to_string();
+        if looks_like_card(&raw) {
+            out.push(raw);
+        }
+    }
+    out
+}
+
+/// A phone written with spaces, dashes, or brackets, such as "(415) 555-0132".
+fn phone_runs(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !(chars[i].is_ascii_digit() || chars[i] == '+' || chars[i] == '(') {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_ascii_digit() || matches!(chars[i], ' ' | '-' | '(' | ')' | '+')) {
+            i += 1;
+        }
+        let raw: String = chars[start..i].iter().collect();
+        let raw = raw.trim().to_string();
+        if looks_like_phone(&raw) {
+            out.push(raw);
+        }
+    }
+    out
 }
 
 fn tokens(text: &str) -> Vec<String> {
@@ -206,6 +269,17 @@ mod tests {
     fn entropy_rejects_short_words() {
         assert!(looks_like_key("sk-live-abcdefghijklmnopqrstuvwxyz"));
         assert!(!looks_like_key("password"));
+    }
+
+    #[test]
+    fn spaced_card_and_bracketed_phone() {
+        let lines = [
+            TextLine { text: "4242 4242 4242 4242".into(), x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+            TextLine { text: "(415) 555-0132".into(), x: 0.0, y: 12.0, w: 10.0, h: 10.0 },
+        ];
+        let found = scan(&lines, &[]);
+        assert!(found.iter().any(|item| item.kind == SecretKind::Card));
+        assert!(found.iter().any(|item| item.kind == SecretKind::Phone));
     }
 
     #[test]

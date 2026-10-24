@@ -36,6 +36,39 @@ pub fn app_pid_at(x: i32, y: i32) -> Option<i32> {
     None
 }
 
+pub fn move_cursor(x: i32, y: i32) -> PlatformResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe {
+            let point = CGPoint {
+                x: x as f64,
+                y: y as f64,
+            };
+            CGWarpMouseCursorPosition(point);
+            let moved = CGEventCreateMouseEvent(std::ptr::null_mut(), 5, point, 0);
+            if !moved.is_null() {
+                CGEventPost(0, moved);
+                CFRelease(moved as *const std::ffi::c_void);
+            }
+        }
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        unsafe {
+            SetCursorPos(x, y);
+        }
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (x, y);
+        Err(PlatformError::Message(
+            "Moving the pointer is not available on this system.".into(),
+        ))
+    }
+}
+
 pub fn scroll_at(x: i32, y: i32, pixels: i32) -> PlatformResult<()> {
     #[cfg(target_os = "macos")]
     {
@@ -126,7 +159,6 @@ pub fn installed_apps() -> Vec<AppChoice> {
     }
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     apps.dedup_by(|a, b| a.id == b.id);
-    apps.truncate(80);
     apps
 }
 
@@ -280,6 +312,21 @@ fn dirs_home() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn collect_apps(dir: &Path, apps: &mut Vec<AppChoice>) {
+    collect_apps_here(dir, apps);
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("app") || !path.is_dir() {
+            continue;
+        }
+        collect_apps_here(&path, apps);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn collect_apps_here(dir: &Path, apps: &mut Vec<AppChoice>) {
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };

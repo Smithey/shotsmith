@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, onHistoryChanged, onRefresh, shotUrl, type HistoryItem } from "../api";
 
 export function History() {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [query, setQuery] = useState("");
+  const queryRef = useRef("");
   const [when, setWhen] = useState<"all" | "today">("all");
   const [appName, setAppName] = useState("");
   const [error, setError] = useState("");
 
-  function load(next = query) {
+  function load(next = queryRef.current) {
+    queryRef.current = next;
     api.history(next).then(setItems).catch((err: Error) => setError(err.message));
   }
 

@@ -445,11 +445,12 @@ pub fn capture_countdown_done(app: AppHandle, state: State<AppState>) -> Result<
 
 #[tauri::command]
 pub fn history_list(state: State<AppState>, query: String) -> Result<Vec<CaptureRecord>, String> {
+    let limit = state.settings.lock().map_err(err_string)?.history_limit.max(1);
     let history = state.history.lock().map_err(err_string)?;
     let mut items = if query.trim().is_empty() {
-        history.list(200).map_err(err_string)?
+        history.list(limit).map_err(err_string)?
     } else {
-        history.search(query.trim()).map_err(err_string)?
+        history.search(query.trim(), limit).map_err(err_string)?
     };
     for item in &mut items {
         attach_preview(item);
@@ -866,7 +867,8 @@ pub fn editor_save(
         if wants_copy {
             clipboard_image = Some(image.clone());
         }
-        export_with_preset(&state, &image, &preset, scale, false)?
+        let (app_name, window_name) = capture_names(&state, &capture_id);
+        export_with_preset(&state, &image, &preset, scale, false, &app_name, &window_name)?
     };
     persist_document(&state, &capture_id, &document)?;
     if let Ok(mut editors) = state.editors.lock() {
@@ -1488,8 +1490,13 @@ fn store_and_route(
     let id = Uuid::new_v4().to_string();
     let dir = state.root.join("History").join(&id);
     std::fs::create_dir_all(&dir).map_err(err_string)?;
+    let forced_id = state.capture_preset.lock().map_err(err_string)?.clone();
+    let preset_cursor = forced_id
+        .as_ref()
+        .and_then(|preset_id| preset_by_id(state, Some(preset_id.clone())).ok())
+        .is_some_and(|preset| preset.include_cursor);
     let mut document = Document::new(image.width(), image.height());
-    if include_cursor {
+    if include_cursor || preset_cursor {
         document.objects.push(AnnotationObject::Cursor(ImageObject {
             id: Uuid::new_v4().to_string(),
             x: cursor_x,
@@ -1517,27 +1524,38 @@ fn store_and_route(
         document_path: Some(document_path.to_string_lossy().to_string()),
         pinned: false,
         ocr_text: None,
+        ephemeral: false,
         preview_path: None,
         preview_rev: 0,
     };
     {
         let history = state.history.lock().map_err(err_string)?;
-        history.insert(&record).map_err(err_string)?;
         let settings = state.settings.lock().map_err(err_string)?.clone();
-        if settings.keep_history {
-            let removed = history
-                .prune(settings.history_limit, settings.history_days)
-                .map_err(err_string)?;
-            for old in removed {
+        if !settings.keep_history {
+            let stale = history.take_ephemeral().map_err(err_string)?;
+            for old in stale {
                 if let Some(parent) = PathBuf::from(old.original_path).parent() {
                     let _ = std::fs::remove_dir_all(parent);
                 }
             }
         }
+        let removed = history
+            .prune(settings.history_limit, settings.history_days)
+            .map_err(err_string)?;
+        for old in removed {
+            if let Some(parent) = PathBuf::from(old.original_path).parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+        let mut record = record;
+        record.ephemeral = !settings.keep_history;
+        history.insert(&record).map_err(err_string)?;
     }
     let settings = state.settings.lock().map_err(err_string)?.clone();
     let forced_preset = state.capture_preset.lock().map_err(err_string)?.take();
     let flat = shotsmith_render::render(&image, &document, &[]);
+    let app_name = shown_name(&source_app);
+    let window_name = shown_name(&window_title);
     let _ = shotsmith_extensions::install_builtin();
     if mode == "text" {
         crate::features::deliver_text(app, state, &id, &image, &original_path)?;
@@ -1545,8 +1563,9 @@ fn store_and_route(
         return Ok(id);
     }
     if let Some(preset_id) = forced_preset {
+        crate::features::block_secrets(state, &id)?;
         let preset = preset_by_id(state, Some(preset_id))?;
-        let saved = export_with_preset(state, &flat, &preset, scale, true)?;
+        let saved = export_with_preset(state, &flat, &preset, scale, true, &app_name, &window_name)?;
         show_hud(
             app,
             state,
@@ -1560,6 +1579,7 @@ fn store_and_route(
     }
     match settings.after_capture.as_str() {
         "copy" => {
+            crate::features::block_secrets(state, &id)?;
             copy_image(&flat)?;
             show_hud(
                 app,
@@ -1571,8 +1591,9 @@ fn store_and_route(
             )?;
         }
         "save" => {
+            crate::features::block_secrets(state, &id)?;
             let preset = preset_by_id(state, None)?;
-            let saved = export_with_preset(state, &flat, &preset, scale, true)?;
+            let saved = export_with_preset(state, &flat, &preset, scale, true, &app_name, &window_name)?;
             show_hud(
                 app,
                 state,
@@ -1695,7 +1716,9 @@ fn run_action(
         "save" => {
             crate::features::block_secrets(state, id)?;
             let preset = preset_by_id(state, None)?;
-            let saved = export_with_preset(state, &flat, &preset, record.scale, true)?;
+            let app_name = shown_name(&record.source_app);
+            let window_name = shown_name(&record.window_title);
+            let saved = export_with_preset(state, &flat, &preset, record.scale, true, &app_name, &window_name)?;
             show_hud(
                 app,
                 state,
@@ -1720,8 +1743,11 @@ fn run_action(
             crate::features::print_image(app, &flat, true, false)
         }
         other if other.starts_with("preset:") => {
+            crate::features::block_secrets(state, id)?;
             let preset = preset_by_id(state, Some(other.trim_start_matches("preset:").into()))?;
-            let saved = export_with_preset(state, &flat, &preset, record.scale, true)?;
+            let app_name = shown_name(&record.source_app);
+            let window_name = shown_name(&record.window_title);
+            let saved = export_with_preset(state, &flat, &preset, record.scale, true, &app_name, &window_name)?;
             show_hud(
                 app,
                 state,
@@ -1732,6 +1758,25 @@ fn run_action(
             )
         }
         other => Err(format!("Unknown action {other}.")),
+    }
+}
+
+fn shown_name(value: &Option<String>) -> String {
+    value
+        .clone()
+        .filter(|item| !item.trim().is_empty())
+        .unwrap_or_else(|| "Screen".into())
+}
+
+fn capture_names(state: &State<AppState>, id: &str) -> (String, String) {
+    let record = state
+        .history
+        .lock()
+        .ok()
+        .and_then(|history| history.get(id).ok().flatten());
+    match record {
+        Some(record) => (shown_name(&record.source_app), shown_name(&record.window_title)),
+        None => ("Screen".into(), "Screen".into()),
     }
 }
 
@@ -1752,6 +1797,8 @@ fn export_with_preset(
     preset: &Preset,
     scale: f32,
     use_clipboard: bool,
+    app_name: &str,
+    window_name: &str,
 ) -> Result<PathBuf, String> {
     let Some(folder) = preset.folder.clone() else {
         if use_clipboard {
@@ -1763,8 +1810,8 @@ fn export_with_preset(
     let name = render_pattern(
         &preset.filename_pattern,
         &PatternContext {
-            app: "Shotsmith".into(),
-            window: "Capture".into(),
+            app: app_name.into(),
+            window: window_name.into(),
             when: Local::now(),
             width: image.width(),
             height: image.height(),
@@ -1851,6 +1898,21 @@ fn capture_scale(state: &State<AppState>, id: &str) -> f32 {
         .and_then(|history| history.get(id).ok().flatten())
         .map(|record| record.scale)
         .unwrap_or(1.0)
+}
+
+pub(crate) fn visible_image(state: &State<AppState>, id: &str) -> Result<RgbaImage, String> {
+    if let Ok(mut editors) = state.editors.lock() {
+        if editors.contains_key(id) {
+            let session = editors.get_mut(id).expect("key was just checked");
+            return flattened(session);
+        }
+    }
+    let record = state.history.lock().map_err(err_string)?.get(id).map_err(err_string)?;
+    let Some(record) = record else {
+        return Err("That capture is no longer in History.".into());
+    };
+    let image = image::open(&record.original_path).map_err(err_string)?.to_rgba8();
+    Ok(with_annotations(&record, &image))
 }
 
 fn with_annotations(record: &CaptureRecord, image: &RgbaImage) -> RgbaImage {
