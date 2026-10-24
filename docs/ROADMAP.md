@@ -8,7 +8,7 @@ Mac menu bar app on macOS 14 and newer. Releases also include a Windows 11 64-bi
 
 Region, window, full screen, scrolling, repeat last region, loupe, timer, and measure. Copy text from the screen and from a capture. The donut after a capture, or a normal menu when VoiceOver or Narrator is on. The editor, including crop, magnify, an eyedropper, and shapes you can edit again later. Selectable text, and Look Up on Mac. Obfuscate by hand, plus a manual secret scan. Beautify. Presets, clipboard, save, share, print, and Open in. History, with thumbnails that follow edits and search across recognized text. Pins. Settings, including recorded shortcuts, watch folders, plugins that stay off, and an update check that stays off. Onboarding. More than one editor window.
 
-The `shotsmith` command, `shotsmith://` links, and Apple Shortcuts on Mac are in this tree. Homebrew and winget manifests are in `packaging/`. The Windows installer is Authenticode signed when the signing secret is set.
+The `shotsmith` command, `shotsmith://` links, and Apple Shortcuts on Mac are in this tree. Homebrew and winget manifests are in `packaging/`.
 
 ## Next
 

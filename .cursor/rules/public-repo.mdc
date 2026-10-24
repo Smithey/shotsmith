@@ -1,0 +1,29 @@
+---
+description: shotsmith is a public MIT repo. Keep private publishing notes and chat out of it.
+alwaysApply: true
+---
+
+# Public repository
+
+`shotsmith` is a public MIT project. Anyone can read every file, commit, release note, and Actions log. Write it for those readers. The private repository is `shotsmith-pro`. Do not treat the public repo as a scratchpad for the private one.
+
+## Belongs here
+
+What the app does, how to build it, how to contribute, how to check a download, and a short statement that Pro is separate and not in this tree.
+
+## Does not belong here
+
+- Publishing setup: certificates, Apple ID, notarization passwords, Actions secret names or values, and the steps used to sign or ship a release. The release workflow may use secrets. Do not document that setup in the README, release notes, or comments.
+- Private product material: the PRD, unpublished prices, internal plans, and anything copied from `shotsmith-pro`.
+- Chat: questions, answers, plans, transcripts, and prompts. Answer those in the conversation. Put text in this repo only when the user asks for that text in the repo.
+- Personal details (job, family, biography) unless the user asks for that exact text in the repo.
+
+```text
+Bad:  A README section that lists signing secret names and how to export the certificate
+Good: README says installers are on Releases and how to check SHA256SUMS
+
+Bad:  Commit a rewritten chat answer about pricing or signing
+Good: Reply in chat. Leave the public docs unchanged.
+```
+
+Before committing, read the diff. If it contains a secret name used as instructions, a price, a PRD excerpt, or chat wording, delete it. Do not push unless the user asked to push.

@@ -78,8 +78,6 @@ What Pro is for, once it exists:
 - Translate, alt text, and shared style kits
 - Teams: shared kits and one invoice
 
-Pricing is not final. The working figure is about $3.99 a month or $36 a year, with a discount for teams, but nothing is being charged yet.
-
 ## Shortcuts
 
 | Action | Mac | Windows |
@@ -100,7 +98,7 @@ On first launch, macOS asks for Screen Recording. Some actions also need Accessi
 
 ## Install
 
-Signed downloads will appear on [Releases](https://github.com/Smithey/shotsmith/releases) after a push to `main`, once the Apple signing secrets below are set. Until then, build it yourself. An ad-hoc build opens on the Mac that built it. Other Macs will refuse it until it is signed with a Developer ID and notarized.
+Installers are on [Releases](https://github.com/Smithey/shotsmith/releases). You can also build it yourself. A local build opens on the Mac that built it.
 
 ```sh
 git clone https://github.com/Smithey/shotsmith.git
@@ -112,29 +110,11 @@ open target/release/bundle/macos/Shotsmith.app
 
 You need Rust (stable), Node.js 20 or newer, pnpm, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/). The disk image is written to `target/release/bundle/dmg/`.
 
-## Signing releases
+## Releases
 
-Other Macs only open the app if it is signed with a **Developer ID Application** certificate and notarized by Apple. That needs:
+A push to `main` builds an Apple silicon disk image and a Windows 11 64-bit installer, then attaches both to a GitHub Release. Check the checksum below before you install. Windows SmartScreen can warn on an unsigned installer.
 
-1. An [Apple Developer Program](https://developer.apple.com/programs/) membership ($99 a year). An iOS distribution certificate is a different certificate and is not used here.
-2. A **Developer ID Application** certificate, created for the same team, exported as a `.p12` (certificate plus private key).
-3. An app-specific password for your Apple ID, from [account.apple.com](https://account.apple.com), so the release job can notarize. An App Store Connect API key works instead.
-4. These [Actions secrets](https://github.com/Smithey/shotsmith/settings/secrets/actions) on this repository:
-
-| Secret | Value |
-|---|---|
-| `APPLE_CERTIFICATE` | The `.p12` file, base64-encoded (`base64 -i Certificate.p12`) |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
-| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Your Name (TEAMID)` |
-| `APPLE_TEAM_ID` | The 10-character Team ID |
-| `APPLE_ID` | The Apple ID email |
-| `APPLE_PASSWORD` | The app-specific password |
-
-A push to `main` builds an Apple silicon disk image and a Windows 11 64-bit installer, then attaches both to a GitHub Release. The Mac image is signed and notarized when those secrets exist. Without them, that image is only ad-hoc signed.
-
-The Windows installer is Authenticode signed when `WINDOWS_CERTIFICATE` (a base64 `.pfx`) and `WINDOWS_CERTIFICATE_PASSWORD` are set. Otherwise it stays unsigned.
-
-`cargo build -p shotsmith-cli` builds the `shotsmith` command. `packaging/bin/shotsmith` runs it. The Homebrew cask and winget manifest are in `packaging/`. Paste the checksums from `SHA256SUMS` before you publish those.
+`cargo build -p shotsmith-cli` builds the `shotsmith` command. `packaging/bin/shotsmith` runs it. Homebrew and winget manifests are in `packaging/`.
 
 ## Check a download
 

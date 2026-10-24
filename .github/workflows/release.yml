@@ -1,5 +1,4 @@
 # Pushing to main builds macOS and Windows installers and attaches them to GitHub Releases.
-# Mac signing and notarization run only when the Apple secrets in the README are set.
 # Every release also gets SHA256SUMS and a GitHub build attestation.
 
 name: Release
@@ -89,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -z "$WINDOWS_CERTIFICATE" ]; then
-            echo "Windows signing secret is not set. The installer stays unsigned."
+            echo "Installer left unsigned."
             exit 0
           fi
           echo "$WINDOWS_CERTIFICATE" | base64 -d > cert.pfx
@@ -137,7 +136,7 @@ jobs:
           gh release upload "$tag" SHA256SUMS --clobber
           {
             echo "macOS 14 or newer, Apple silicon."
-            echo "Windows 11, 64-bit. The installer is Authenticode signed when the Windows signing secrets are set. Otherwise SmartScreen may warn."
+            echo "Windows 11, 64-bit. SmartScreen may warn if the installer is unsigned."
             echo
             echo "SHA256SUMS:"
             echo
@@ -150,6 +149,6 @@ jobs:
             echo
             echo "GitHub build attestation: gh attestation verify FILE --repo Smithey/shotsmith"
             echo
-            echo "A Mac disk image is notarized only when the Apple signing secrets are set. Until then, other Macs will refuse it."
+            echo "Use the disk image from this release on other Macs. A build made on your own Mac opens on that Mac only."
           } > release-notes.md
           gh release edit "$tag" --notes-file release-notes.md
