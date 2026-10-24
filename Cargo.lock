@@ -4208,6 +4208,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "block2",
  "chrono",
  "dirs 5.0.1",
  "image",
@@ -4316,8 +4317,13 @@ dependencies = [
 name = "shotsmith-platform"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "device_query",
  "image",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
  "serde",
  "thiserror 2.0.21",
  "xcap",

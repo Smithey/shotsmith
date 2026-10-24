@@ -21,7 +21,9 @@ pub fn app_pid_at(x: i32, y: i32) -> Option<i32> {
         if name.contains("shotsmith") || name.is_empty() {
             continue;
         }
-        let (Ok(wx), Ok(wy), Ok(ww), Ok(wh)) = (window.x(), window.y(), window.width(), window.height()) else {
+        let (Ok(wx), Ok(wy), Ok(ww), Ok(wh)) =
+            (window.x(), window.y(), window.width(), window.height())
+        else {
             continue;
         };
         if ww < 40 || wh < 40 {
@@ -38,7 +40,10 @@ pub fn scroll_at(x: i32, y: i32, pixels: i32) -> PlatformResult<()> {
     #[cfg(target_os = "macos")]
     {
         unsafe {
-            let point = CGPoint { x: x as f64, y: y as f64 };
+            let point = CGPoint {
+                x: x as f64,
+                y: y as f64,
+            };
             CGWarpMouseCursorPosition(point);
             // A warp does not update which view is under the pointer, so the
             // scroll would land on whatever was hovered before the capture.
@@ -69,11 +74,26 @@ pub fn scroll_at(x: i32, y: i32, pixels: i32) -> PlatformResult<()> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (x, y, pixels);
-        Err(PlatformError::Message("Scrolling is not available on this system.".into()))
+        Err(PlatformError::Message(
+            "Scrolling is not available on this system.".into(),
+        ))
     }
 }
 
 pub fn element_bounds(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(element_bounds_now(x, y));
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+        Ok(result) => result,
+        Err(_) => Err(PlatformError::Message(
+            "That element did not answer.".into(),
+        )),
+    }
+}
+
+fn element_bounds_now(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)> {
     #[cfg(target_os = "macos")]
     {
         return element_bounds_mac(x, y);
@@ -85,7 +105,9 @@ pub fn element_bounds(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (x, y);
-        Err(PlatformError::Message("Measuring elements is not available on this system.".into()))
+        Err(PlatformError::Message(
+            "Measuring elements is not available on this system.".into(),
+        ))
     }
 }
 
@@ -111,26 +133,38 @@ pub fn installed_apps() -> Vec<AppChoice> {
 pub fn open_with(app_id: &str, file: &Path) -> PlatformResult<()> {
     #[cfg(target_os = "macos")]
     {
-        let status = Command::new("open").arg("-a").arg(app_id).arg(file).status();
+        let status = Command::new("open")
+            .arg("-a")
+            .arg(app_id)
+            .arg(file)
+            .status();
         return match status {
             Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(PlatformError::Message(format!("{app_id} did not open ({status})."))),
+            Ok(status) => Err(PlatformError::Message(format!(
+                "{app_id} did not open ({status})."
+            ))),
             Err(err) => Err(PlatformError::Message(err.to_string())),
         };
     }
     #[cfg(target_os = "windows")]
     {
-        let status = Command::new("cmd").args(["/C", "start", "", app_id, &file.display().to_string()]).status();
+        let status = Command::new("cmd")
+            .args(["/C", "start", "", app_id, &file.display().to_string()])
+            .status();
         return match status {
             Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(PlatformError::Message(format!("{app_id} did not open ({status})."))),
+            Ok(status) => Err(PlatformError::Message(format!(
+                "{app_id} did not open ({status})."
+            ))),
             Err(err) => Err(PlatformError::Message(err.to_string())),
         };
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app_id, file);
-        Err(PlatformError::Message("Open in is not available on this system.".into()))
+        Err(PlatformError::Message(
+            "Open in is not available on this system.".into(),
+        ))
     }
 }
 
@@ -145,7 +179,9 @@ pub fn lookup_text(text: &str) -> PlatformResult<()> {
         let status = Command::new("open").arg(url).status();
         return match status {
             Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(PlatformError::Message(format!("Look Up did not open ({status})."))),
+            Ok(status) => Err(PlatformError::Message(format!(
+                "Look Up did not open ({status})."
+            ))),
             Err(err) => Err(PlatformError::Message(err.to_string())),
         };
     }
@@ -171,7 +207,12 @@ pub fn screen_reader_active() -> bool {
     #[cfg(target_os = "windows")]
     {
         Command::new("reg")
-            .args(["query", r"HKCU\Software\Microsoft\Narrator\NoRoam", "/v", "RunningState"])
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Narrator\NoRoam",
+                "/v",
+                "RunningState",
+            ])
             .output()
             .ok()
             .filter(|output| output.status.success())
@@ -190,9 +231,14 @@ pub fn share_file_windows(path: &Path) -> PlatformResult<()> {
         "$path = '{}'; $shell = New-Object -ComObject Shell.Application; $folder = $shell.NameSpace((Split-Path -LiteralPath $path)); $item = $folder.ParseName((Split-Path -Leaf -LiteralPath $path)); if (-not $item) {{ exit 1 }}; $item.InvokeVerb('share')",
         path.display().to_string().replace('\'', "''")
     );
-    match Command::new("powershell").args(["-NoProfile", "-STA", "-Command", &script]).status() {
+    match Command::new("powershell")
+        .args(["-NoProfile", "-STA", "-Command", &script])
+        .status()
+    {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(PlatformError::Message(format!("Windows share did not open ({status})."))),
+        Ok(status) => Err(PlatformError::Message(format!(
+            "Windows share did not open ({status})."
+        ))),
         Err(err) => Err(PlatformError::Message(err.to_string())),
     }
 }
@@ -202,9 +248,14 @@ pub fn print_file_windows(path: &Path) -> PlatformResult<()> {
         "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $path = '{}'; $img = [System.Drawing.Image]::FromFile($path); $dlg = New-Object System.Windows.Forms.PrintDialog; if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {{ exit 0 }}; $doc = New-Object System.Drawing.Printing.PrintDocument; $doc.PrinterSettings = $dlg.PrinterSettings; $doc.Add_PrintPage({{ param($sender, $e) $e.Graphics.DrawImage($img, $e.MarginBounds) }}); $doc.Print()",
         path.display().to_string().replace('\'', "''")
     );
-    match Command::new("powershell").args(["-NoProfile", "-STA", "-Command", &script]).status() {
+    match Command::new("powershell")
+        .args(["-NoProfile", "-STA", "-Command", &script])
+        .status()
+    {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(PlatformError::Message(format!("Windows print did not open ({status})."))),
+        Ok(status) => Err(PlatformError::Message(format!(
+            "Windows print did not open ({status})."
+        ))),
         Err(err) => Err(PlatformError::Message(err.to_string())),
     }
 }
@@ -222,7 +273,9 @@ fn url_escape(text: &str) -> String {
 }
 
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
 #[cfg(target_os = "macos")]
@@ -238,14 +291,20 @@ fn collect_apps(dir: &Path, apps: &mut Vec<AppChoice>) {
         let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
             continue;
         };
-        apps.push(AppChoice { id: path.to_string_lossy().to_string(), name: name.to_string() });
+        apps.push(AppChoice {
+            id: path.to_string_lossy().to_string(),
+            name: name.to_string(),
+        });
     }
 }
 
 #[cfg(target_os = "windows")]
 fn collect_app_paths(apps: &mut Vec<AppChoice>) {
     let output = Command::new("reg")
-        .args(["query", r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"])
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+        ])
         .output();
     let Ok(output) = output else {
         return;
@@ -261,7 +320,10 @@ fn collect_app_paths(apps: &mut Vec<AppChoice>) {
         if !name.to_ascii_lowercase().ends_with(".exe") {
             continue;
         }
-        apps.push(AppChoice { id: name.to_string(), name: name.trim_end_matches(".exe").to_string() });
+        apps.push(AppChoice {
+            id: name.to_string(),
+            name: name.trim_end_matches(".exe").to_string(),
+        });
     }
 }
 
@@ -270,13 +332,17 @@ fn element_bounds_mac(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)> {
     unsafe {
         let system = AXUIElementCreateSystemWide();
         if system.is_null() {
-            return Err(PlatformError::Message("Accessibility is not available.".into()));
+            return Err(PlatformError::Message(
+                "Accessibility is not available.".into(),
+            ));
         }
         let mut element: *const std::ffi::c_void = std::ptr::null();
         let found = AXUIElementCopyElementAtPosition(system, x, y, &mut element);
         CFRelease(system);
         if found != 0 || element.is_null() {
-            return Err(PlatformError::Message("No element under the pointer.".into()));
+            return Err(PlatformError::Message(
+                "No element under the pointer.".into(),
+            ));
         }
         let attr = CFStringCreateWithCString(std::ptr::null(), c"AXFrame".as_ptr(), 0x08000100);
         let mut value: *const std::ffi::c_void = std::ptr::null();
@@ -288,13 +354,24 @@ fn element_bounds_mac(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)> {
         if copied != 0 || value.is_null() {
             return Err(PlatformError::Message("That element has no frame.".into()));
         }
-        let mut rect = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: 0.0, height: 0.0 } };
+        let mut rect = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
         let ok = AXValueGetValue(value, 3, &mut rect as *mut CGRect as *mut std::ffi::c_void);
         CFRelease(value);
         if !ok || rect.size.width < 1.0 || rect.size.height < 1.0 {
             return Err(PlatformError::Message("That element has no frame.".into()));
         }
-        Ok((rect.origin.x as f32, rect.origin.y as f32, rect.size.width as f32, rect.size.height as f32))
+        Ok((
+            rect.origin.x as f32,
+            rect.origin.y as f32,
+            rect.size.width as f32,
+            rect.size.height as f32,
+        ))
     }
 }
 
@@ -303,12 +380,21 @@ fn element_bounds_windows(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)
     let script = format!(
         "Add-Type -AssemblyName UIAutomationClient; $el = [System.Windows.Automation.AutomationElement]::FromPoint((New-Object System.Windows.Point({x},{y}))); if (-not $el) {{ exit 1 }}; $r = $el.Current.BoundingRectangle; Write-Output ($r.X.ToString() + ' ' + $r.Y.ToString() + ' ' + $r.Width.ToString() + ' ' + $r.Height.ToString())"
     );
-    let output = Command::new("powershell").args(["-NoProfile", "-Command", &script]).output().map_err(|err| PlatformError::Message(err.to_string()))?;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|err| PlatformError::Message(err.to_string()))?;
     if !output.status.success() {
-        return Err(PlatformError::Message("No element under the pointer.".into()));
+        return Err(PlatformError::Message(
+            "No element under the pointer.".into(),
+        ));
     }
-    let text = String::from_utf8(output.stdout).map_err(|err| PlatformError::Message(err.to_string()))?;
-    let nums: Vec<f32> = text.split_whitespace().filter_map(|part| part.parse().ok()).collect();
+    let text =
+        String::from_utf8(output.stdout).map_err(|err| PlatformError::Message(err.to_string()))?;
+    let nums: Vec<f32> = text
+        .split_whitespace()
+        .filter_map(|part| part.parse().ok())
+        .collect();
     if nums.len() != 4 || nums[2] < 1.0 || nums[3] < 1.0 {
         return Err(PlatformError::Message("That element has no frame.".into()));
     }
@@ -360,8 +446,18 @@ struct CGRect {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
-    fn CGEventCreateMouseEvent(source: *mut std::ffi::c_void, kind: u32, point: CGPoint, button: u32) -> *mut std::ffi::c_void;
-    fn CGEventCreateScrollWheelEvent(source: *mut std::ffi::c_void, units: u32, wheel_count: u32, wheel1: i32) -> *mut std::ffi::c_void;
+    fn CGEventCreateMouseEvent(
+        source: *mut std::ffi::c_void,
+        kind: u32,
+        point: CGPoint,
+        button: u32,
+    ) -> *mut std::ffi::c_void;
+    fn CGEventCreateScrollWheelEvent(
+        source: *mut std::ffi::c_void,
+        units: u32,
+        wheel_count: u32,
+        wheel1: i32,
+    ) -> *mut std::ffi::c_void;
     fn CGEventSetIntegerValueField(event: *mut std::ffi::c_void, field: u32, value: i64);
     fn CGEventSetLocation(event: *mut std::ffi::c_void, point: CGPoint);
     fn CGEventPost(tap: u32, event: *mut std::ffi::c_void);
@@ -371,15 +467,32 @@ extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXUIElementCreateSystemWide() -> *const std::ffi::c_void;
-    fn AXUIElementCopyElementAtPosition(app: *const std::ffi::c_void, x: f32, y: f32, element: *mut *const std::ffi::c_void) -> i32;
-    fn AXUIElementCopyAttributeValue(element: *const std::ffi::c_void, attribute: *const std::ffi::c_void, value: *mut *const std::ffi::c_void) -> i32;
-    fn AXValueGetValue(value: *const std::ffi::c_void, kind: i32, out: *mut std::ffi::c_void) -> bool;
+    fn AXUIElementCopyElementAtPosition(
+        app: *const std::ffi::c_void,
+        x: f32,
+        y: f32,
+        element: *mut *const std::ffi::c_void,
+    ) -> i32;
+    fn AXUIElementCopyAttributeValue(
+        element: *const std::ffi::c_void,
+        attribute: *const std::ffi::c_void,
+        value: *mut *const std::ffi::c_void,
+    ) -> i32;
+    fn AXValueGetValue(
+        value: *const std::ffi::c_void,
+        kind: i32,
+        out: *mut std::ffi::c_void,
+    ) -> bool;
 }
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
-    fn CFStringCreateWithCString(allocator: *const std::ffi::c_void, text: *const i8, encoding: u32) -> *const std::ffi::c_void;
+    fn CFStringCreateWithCString(
+        allocator: *const std::ffi::c_void,
+        text: *const i8,
+        encoding: u32,
+    ) -> *const std::ffi::c_void;
     fn CFRelease(item: *const std::ffi::c_void);
 }
 

@@ -1,10 +1,17 @@
 mod input;
+#[cfg(target_os = "macos")]
+mod macos_capture;
 
 use image::RgbaImage;
 use thiserror::Error;
-use xcap::{Monitor, Window};
+#[cfg(not(target_os = "macos"))]
+use xcap::Monitor;
+use xcap::Window;
 
-pub use input::{app_pid_at, element_bounds, installed_apps, lookup_text, open_with, print_file_windows, screen_reader_active, scroll_at, share_file_windows, AppChoice};
+pub use input::{
+    app_pid_at, element_bounds, installed_apps, lookup_text, open_with, print_file_windows,
+    screen_reader_active, scroll_at, share_file_windows, AppChoice,
+};
 
 #[derive(Debug, Error)]
 pub enum PlatformError {
@@ -160,7 +167,9 @@ pub fn open_system_settings(pane: &str) -> PlatformResult<()> {
             .status()
         {
             Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(PlatformError::Message(format!("Windows Settings did not open ({status})."))),
+            Ok(status) => Err(PlatformError::Message(format!(
+                "Windows Settings did not open ({status})."
+            ))),
             Err(err) => Err(PlatformError::Message(err.to_string())),
         }
     }
@@ -206,22 +215,58 @@ extern "C" {
 }
 
 pub fn displays() -> PlatformResult<Vec<DisplayInfo>> {
-    Ok(Monitor::all()?.iter().filter_map(display_from).collect())
+    #[cfg(target_os = "macos")]
+    {
+        return macos_capture::display_list();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Monitor::all()?.iter().filter_map(display_from).collect())
+    }
 }
 
 pub fn freeze_all() -> PlatformResult<Vec<FrozenDisplay>> {
-    let mut frozen = Vec::new();
-    for monitor in Monitor::all()? {
-        let Some(info) = display_from(&monitor) else {
-            continue;
-        };
-        let image = monitor.capture_image()?;
-        frozen.push(FrozenDisplay { info, image });
+    #[cfg(target_os = "macos")]
+    {
+        return macos_capture::freeze_all();
     }
-    if frozen.is_empty() {
-        return Err(PlatformError::Message("No displays were captured.".into()));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut frozen = Vec::new();
+        for monitor in Monitor::all()? {
+            let Some(info) = display_from(&monitor) else {
+                continue;
+            };
+            let image = monitor.capture_image()?;
+            frozen.push(FrozenDisplay { info, image });
+        }
+        if frozen.is_empty() {
+            return Err(PlatformError::Message("No displays were captured.".into()));
+        }
+        Ok(frozen)
     }
-    Ok(frozen)
+}
+
+pub fn capture_region(
+    display_id: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> PlatformResult<RgbaImage> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_capture::capture_region(display_id, x, y, width, height);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let frozen = freeze_all()?;
+        let display = frozen
+            .iter()
+            .find(|item| item.info.id == display_id)
+            .ok_or_else(|| PlatformError::Message("That display is not available.".into()))?;
+        Ok(crop_rgba(&display.image, x, y, width, height))
+    }
 }
 
 pub fn list_windows() -> PlatformResult<Vec<WindowInfo>> {
@@ -256,12 +301,21 @@ pub fn list_windows() -> PlatformResult<Vec<WindowInfo>> {
 }
 
 pub fn capture_window(id: u32) -> PlatformResult<RgbaImage> {
-    for window in Window::all()? {
-        if window.id().unwrap_or(u32::MAX) == id {
-            return Ok(window.capture_image()?);
-        }
+    #[cfg(target_os = "macos")]
+    {
+        return macos_capture::capture_window(id);
     }
-    Err(PlatformError::Message(format!("Window {id} is not available.")))
+    #[cfg(not(target_os = "macos"))]
+    {
+        for window in Window::all()? {
+            if window.id().unwrap_or(u32::MAX) == id {
+                return Ok(window.capture_image()?);
+            }
+        }
+        Err(PlatformError::Message(format!(
+            "Window {id} is not available."
+        )))
+    }
 }
 
 pub fn cursor_position() -> (i32, i32) {
@@ -278,7 +332,10 @@ pub fn reveal_path(path: &std::path::Path) -> PlatformResult<()> {
         path
     };
     let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(path).status()
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .status()
     } else if cfg!(target_os = "windows") {
         // explorer.exe often exits with code 1 after a successful select.
         let selected = format!("/select,{}", path.display());
@@ -299,6 +356,75 @@ pub fn reveal_path(path: &std::path::Path) -> PlatformResult<()> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn crop_rgba(image: &RgbaImage, x: u32, y: u32, width: u32, height: u32) -> RgbaImage {
+    let x = x.min(image.width().saturating_sub(1));
+    let y = y.min(image.height().saturating_sub(1));
+    let width = width.max(1).min(image.width() - x);
+    let height = height.max(1).min(image.height() - y);
+    image::imageops::crop_imm(image, x, y, width, height).to_image()
+}
+
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) fn region_points(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    pixel_w: u32,
+    pixel_h: u32,
+    point_w: f64,
+    point_h: f64,
+) -> (f64, f64, f64, f64) {
+    let sx = if pixel_w == 0 {
+        1.0
+    } else {
+        point_w / pixel_w as f64
+    };
+    let sy = if pixel_h == 0 {
+        1.0
+    } else {
+        point_h / pixel_h as f64
+    };
+    (
+        x as f64 * sx,
+        y as f64 * sy,
+        (width as f64 * sx).max(1.0),
+        (height as f64 * sy).max(1.0),
+    )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) fn bgra_to_rgba(
+    width: usize,
+    height: usize,
+    bytes_per_row: usize,
+    data: &[u8],
+) -> PlatformResult<RgbaImage> {
+    if width == 0 || height == 0 || bytes_per_row < width.saturating_mul(4) {
+        return Err(PlatformError::Message(
+            "The screen capture was empty.".into(),
+        ));
+    }
+    let mut buffer = Vec::with_capacity(width * height * 4);
+    for row in 0..height {
+        let start = row * bytes_per_row;
+        let end = start + width * 4;
+        if end > data.len() {
+            return Err(PlatformError::Message(
+                "The screen capture was empty.".into(),
+            ));
+        }
+        buffer.extend_from_slice(&data[start..end]);
+    }
+    for pixel in buffer.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    RgbaImage::from_raw(width as u32, height as u32, buffer)
+        .ok_or_else(|| PlatformError::Message("The screen capture was empty.".into()))
+}
+
+#[cfg(not(target_os = "macos"))]
 fn display_from(monitor: &Monitor) -> Option<DisplayInfo> {
     Some(DisplayInfo {
         id: monitor.id().ok()?,
@@ -313,4 +439,54 @@ fn display_from(monitor: &Monitor) -> Option<DisplayInfo> {
         scale: monitor.scale_factor().unwrap_or(1.0).max(1.0),
         primary: monitor.is_primary().unwrap_or(false),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bgra_rows_become_rgba() {
+        let data = [1, 2, 3, 4, 5, 6, 7, 8];
+        let image = bgra_to_rgba(2, 1, 8, &data).unwrap();
+        assert_eq!(image.get_pixel(0, 0).0, [3, 2, 1, 4]);
+        assert_eq!(image.get_pixel(1, 0).0, [7, 6, 5, 8]);
+    }
+
+    #[test]
+    fn bgra_skips_row_padding() {
+        let data = [1, 2, 3, 4, 9, 9, 5, 6, 7, 8, 9, 9];
+        let image = bgra_to_rgba(1, 2, 6, &data).unwrap();
+        assert_eq!(image.get_pixel(0, 0).0, [3, 2, 1, 4]);
+        assert_eq!(image.get_pixel(0, 1).0, [7, 6, 5, 8]);
+    }
+
+    #[test]
+    fn bgra_rejects_a_short_buffer() {
+        assert!(bgra_to_rgba(2, 1, 8, &[1, 2, 3, 4]).is_err());
+    }
+
+    #[test]
+    fn region_points_follow_the_display_scale() {
+        let (x, y, w, h) = region_points(100, 40, 10, 20, 2000, 1000, 1000.0, 500.0);
+        assert_eq!((x, y, w, h), (50.0, 20.0, 5.0, 10.0));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn capture_returns_without_blocking_forever() {
+        let started = std::time::Instant::now();
+        let result = std::thread::spawn(freeze_all)
+            .join()
+            .expect("capture thread");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "capture did not return"
+        );
+        if let Ok(frames) = &result {
+            assert!(!frames.is_empty());
+            assert!(frames[0].image.width() > 1);
+            assert!(frames[0].image.height() > 1);
+        }
+    }
 }

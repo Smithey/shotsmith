@@ -1,10 +1,11 @@
 use crate::state::{AppState, DisplayPayload};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindowBuilder,
-};
 use tauri::window::Color;
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl,
+    WebviewWindowBuilder,
+};
 
 pub fn is_document_window(label: &str) -> bool {
     matches!(label, "onboarding" | "settings" | "history") || label.starts_with("editor-")
@@ -32,7 +33,10 @@ static MENU_SHOWN_AT: AtomicU64 = AtomicU64::new(0);
 static MENU_FOCUS_RETRY: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 pub fn open_view(
@@ -69,9 +73,25 @@ pub fn open_view(
         .position(x, y)
         .decorations(decorations)
         .transparent(transparent)
-        .background_color(if transparent { Color(0, 0, 0, 0) } else { Color(28, 28, 30, 255) })
-        .always_on_top(transparent || label.starts_with("pin-") || capture || label == "hud" || label == "donut")
-        .skip_taskbar(transparent || capture || label == "hud" || label == "donut" || label.starts_with("pin-"))
+        .background_color(if transparent {
+            Color(0, 0, 0, 0)
+        } else {
+            Color(28, 28, 30, 255)
+        })
+        .always_on_top(
+            transparent
+                || label.starts_with("pin-")
+                || capture
+                || label == "hud"
+                || label == "donut",
+        )
+        .skip_taskbar(
+            transparent
+                || capture
+                || label == "hud"
+                || label == "donut"
+                || label.starts_with("pin-"),
+        )
         .resizable(decorations)
         .shadow(!transparent && !capture)
         .visible(!chrome)
@@ -95,7 +115,13 @@ pub fn open_view(
 
 fn stored_appearance(app: &AppHandle) -> String {
     app.try_state::<AppState>()
-        .and_then(|state| state.settings.lock().ok().map(|settings| settings.appearance.clone()))
+        .and_then(|state| {
+            state
+                .settings
+                .lock()
+                .ok()
+                .map(|settings| settings.appearance.clone())
+        })
         .unwrap_or_else(|| "system".into())
 }
 
@@ -122,7 +148,11 @@ fn place_traffic_lights(window: &tauri::WebviewWindow) {
             return;
         };
         let content_height = content.frame().size.height;
-        for kind in [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton] {
+        for kind in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
             let Some(button) = ns.standardWindowButton(kind) else {
                 continue;
             };
@@ -134,7 +164,10 @@ fn place_traffic_lights(window: &tauri::WebviewWindow) {
             let y = content_height - BAR + (BAR - frame.size.height) / 2.0;
             let placed = parent.convertPoint_fromView(CGPoint::new(in_window.x, y), None);
             button.setFrameOrigin(placed);
-            button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+            button.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMaxXMargin
+                    | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
         }
     }
 }
@@ -169,7 +202,11 @@ fn paint_chrome(window: &tauri::WebviewWindow, appearance: &str) {
         "light" => false,
         _ => matches!(window.theme().ok(), Some(tauri::Theme::Dark)),
     };
-    let color = if dark { Color(28, 28, 30, 255) } else { Color(255, 255, 255, 255) };
+    let color = if dark {
+        Color(28, 28, 30, 255)
+    } else {
+        Color(255, 255, 255, 255)
+    };
     let _ = window.set_background_color(Some(color));
 }
 
@@ -218,7 +255,9 @@ fn watch_window(app: &AppHandle, window: &tauri::WebviewWindow) {
                 let _ = app.run_on_main_thread(move || apply_dock(&queued));
             }
         }
-        tauri::WindowEvent::Resized(_) if label == "settings" || label == "history" || label.starts_with("editor-") => {
+        tauri::WindowEvent::Resized(_)
+            if label == "settings" || label == "history" || label.starts_with("editor-") =>
+        {
             let queued = app.clone();
             let label = label.clone();
             let _ = app.run_on_main_thread(move || {
@@ -244,11 +283,18 @@ fn watch_window(app: &AppHandle, window: &tauri::WebviewWindow) {
 fn apply_dock(app: &AppHandle) {
     let pinned = app
         .try_state::<AppState>()
-        .and_then(|state| state.settings.lock().ok().map(|settings| settings.show_dock_icon))
+        .and_then(|state| {
+            state
+                .settings
+                .lock()
+                .ok()
+                .map(|settings| settings.show_dock_icon)
+        })
         .unwrap_or(false);
-    let open = app.webview_windows().into_iter().any(|(label, window)| {
-        is_document_window(&label) && window.is_visible().unwrap_or(false)
-    });
+    let open = app
+        .webview_windows()
+        .into_iter()
+        .any(|(label, window)| is_document_window(&label) && window.is_visible().unwrap_or(false));
     let policy = if pinned || open {
         tauri::ActivationPolicy::Regular
     } else {
@@ -269,6 +315,15 @@ pub fn dismiss_donut(app: &AppHandle) {
     }
 }
 
+pub fn cancel_overlays(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut preset) = state.capture_preset.lock() {
+            *preset = None;
+        }
+    }
+    hide_labeled(app, "overlay-");
+}
+
 pub fn hide_labeled(app: &AppHandle, prefix: &str) {
     let mut hid_overlay = false;
     for (label, window) in app.webview_windows() {
@@ -283,17 +338,26 @@ pub fn hide_labeled(app: &AppHandle, prefix: &str) {
         }
     }
     if hid_overlay {
+        disarm_overlay_cancel();
         crate::set_tray_capturing(app, false);
     }
 }
 
 pub fn show_overlays(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let displays = state.displays.lock().map_err(|err| err.to_string())?.clone();
+    let displays = state
+        .displays
+        .lock()
+        .map_err(|err| err.to_string())?
+        .clone();
     drop(state);
+    if displays.is_empty() {
+        return Ok(());
+    }
     for display in displays {
         show_overlay(app, &display)?;
     }
+    arm_overlay_cancel(app);
     crate::set_tray_capturing(app, true);
     Ok(())
 }
@@ -329,9 +393,11 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;
-        use objc2_app_kit::{NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowSharingType};
+        use objc2_app_kit::{
+            NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowSharingType,
+        };
         use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-        let Some(mtm) = MainThreadMarker::new() else {
+        let Some(_main) = MainThreadMarker::new() else {
             return;
         };
         let Ok(raw) = window.ns_window() else {
@@ -341,15 +407,16 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
             return;
         };
         let ns = unsafe { ptr.as_ref() };
-        let primary_h = NSScreen::mainScreen(mtm)
-            .map(|screen| screen.frame().size.height)
-            .unwrap_or(height);
+        // Flip from top-left display points using the menu-bar display, not
+        // whichever screen currently holds the key window.
+        let primary_h = primary_display_height().unwrap_or(height);
         let frame = CGRect::new(
             CGPoint::new(x, primary_h - (y + height)),
             CGSize::new(width, height),
         );
         ns.setFrame_display(frame, true);
-        ns.setLevel(1000);
+        // Popup level covers the menu bar and stays under Force Quit.
+        ns.setLevel(NSPopUpMenuWindowLevel);
         ns.setSharingType(NSWindowSharingType::None);
         ns.setHidesOnDeactivate(false);
         ns.setCollectionBehavior(
@@ -358,7 +425,7 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
                 | NSWindowCollectionBehavior::Stationary
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
-        ns.orderFrontRegardless();
+        ns.makeKeyAndOrderFront(None);
     }
     #[cfg(target_os = "windows")]
     {
@@ -373,7 +440,89 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
     }
 }
 
-pub fn place_near_cursor(app: &AppHandle, label: &str, view: &str, size: f64) -> Result<(), String> {
+#[cfg(target_os = "macos")]
+fn primary_display_height() -> Option<f64> {
+    use objc2_core_foundation::CGRect;
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
+    }
+    let height = unsafe { CGDisplayBounds(CGMainDisplayID()).size.height };
+    (height > 1.0).then_some(height)
+}
+
+fn arm_overlay_cancel(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        arm_overlay_cancel_mac(app);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
+}
+
+fn disarm_overlay_cancel() {
+    #[cfg(target_os = "macos")]
+    {
+        disarm_overlay_cancel_mac();
+    }
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static OVERLAY_MONITOR: std::cell::RefCell<Option<objc2::rc::Retained<objc2::runtime::AnyObject>>> = std::cell::RefCell::new(None);
+}
+
+#[cfg(target_os = "macos")]
+fn arm_overlay_cancel_mac(app: &AppHandle) {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+
+    disarm_overlay_cancel_mac();
+    let app = app.clone();
+    let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        let event_ref = unsafe { event.as_ref() };
+        let code = event_ref.keyCode();
+        let command_period = code == 47
+            && event_ref
+                .modifierFlags()
+                .contains(NSEventModifierFlags::Command);
+        if code == 53 || command_period {
+            let queued = app.clone();
+            let _ = app.run_on_main_thread(move || cancel_overlays(&queued));
+            std::ptr::null_mut()
+        } else {
+            event.as_ptr()
+        }
+    });
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block)
+    };
+    if let Some(monitor) = monitor {
+        OVERLAY_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn disarm_overlay_cancel_mac() {
+    use objc2_app_kit::NSEvent;
+    OVERLAY_MONITOR.with(|slot| {
+        if let Some(monitor) = slot.borrow_mut().take() {
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+    });
+}
+
+pub fn place_near_cursor(
+    app: &AppHandle,
+    label: &str,
+    view: &str,
+    size: f64,
+) -> Result<(), String> {
     let (cx, cy) = shotsmith_platform::cursor_position();
     let monitors = app.available_monitors().unwrap_or_default();
     let monitor = monitors.iter().find(|item| {
@@ -420,8 +569,9 @@ fn seat_tool_window(window: &tauri::WebviewWindow) {
     unsafe {
         use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW,
+            WS_EX_TOOLWINDOW,
         };
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let next = (ex | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
@@ -488,7 +638,9 @@ pub fn open_history(app: &AppHandle) -> Result<(), String> {
         .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
-    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
     let window = builder.build().map_err(|err| err.to_string())?;
     watch_window(app, &window);
     list_in_dock(&window);
@@ -521,7 +673,9 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
         .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
-    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
     let window = builder.build().map_err(|err| err.to_string())?;
     watch_window(app, &window);
     list_in_dock(&window);
@@ -534,7 +688,11 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
 }
 
 fn unique_window_title(app: &AppHandle, label: &str, title: &str) -> String {
-    let base = if title.trim().is_empty() { "Capture" } else { title.trim() };
+    let base = if title.trim().is_empty() {
+        "Capture"
+    } else {
+        title.trim()
+    };
     let mut candidate = base.to_string();
     let mut n = 2;
     loop {
@@ -577,7 +735,9 @@ pub fn open_editor(app: &AppHandle, id: &str, title: &str) -> Result<(), String>
         .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
-    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
     let window = builder.build().map_err(|err| err.to_string())?;
     watch_window(app, &window);
     list_in_dock(&window);
@@ -634,7 +794,10 @@ fn place_status_menu(app: &AppHandle, rect: Rect) -> Result<(), String> {
             && anchor.y < origin.y as f64 + size.height as f64
     });
     let monitor = monitor.or(monitors.first());
-    let scale = monitor.map(|item| item.scale_factor()).unwrap_or(1.0).max(1.0);
+    let scale = monitor
+        .map(|item| item.scale_factor())
+        .unwrap_or(1.0)
+        .max(1.0);
     let origin = rect.position.to_logical::<f64>(scale);
     let icon = rect.size.to_logical::<f64>(scale);
     let mut x = origin.x + icon.width / 2.0 - WIN_W / 2.0;
@@ -714,7 +877,10 @@ pub fn place_hud(app: &AppHandle) -> Result<(), String> {
         let scale = monitor.scale_factor();
         let origin = monitor.position().to_logical::<f64>(scale);
         let size = monitor.size().to_logical::<f64>(scale);
-        (origin.x + size.width - W - 24.0, origin.y + size.height - H - 72.0)
+        (
+            origin.x + size.width - W - 24.0,
+            origin.y + size.height - H - 72.0,
+        )
     } else {
         (80.0, 80.0)
     };

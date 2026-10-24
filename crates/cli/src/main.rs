@@ -51,18 +51,25 @@ fn capture(args: Vec<String>) -> i32 {
         eprintln!("shotsmith capture currently takes a full screen. Pass --screen.");
         return 2;
     }
-    match shotsmith_platform::freeze_all() {
-        Ok(mut displays) => {
+    match std::thread::spawn(shotsmith_platform::freeze_all).join() {
+        Ok(Ok(mut displays)) => {
             if displays.is_empty() {
                 eprintln!("No display was captured.");
                 return 1;
             }
-            let index = displays.iter().position(|item| item.info.primary).unwrap_or(0);
+            let index = displays
+                .iter()
+                .position(|item| item.info.primary)
+                .unwrap_or(0);
             let display = displays.swap_remove(index);
             write_png(&display.image, &out)
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             eprintln!("{err}");
+            1
+        }
+        Err(_) => {
+            eprintln!("Screen capture failed.");
             1
         }
     }
@@ -87,7 +94,7 @@ fn ocr(path: Option<String>) -> i32 {
         Err(err) => {
             eprintln!("{err}");
             1
-        },
+        }
     }
 }
 
@@ -102,8 +109,14 @@ fn presets() -> i32 {
         return 1;
     };
     for item in list {
-        let name = item.get("name").and_then(|value| value.as_str()).unwrap_or("Preset");
-        let id = item.get("id").and_then(|value| value.as_str()).unwrap_or("");
+        let name = item
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Preset");
+        let id = item
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         println!("{name}\t{id}");
     }
     0
@@ -119,7 +132,10 @@ fn watch(folder: Option<String>) -> i32 {
         eprintln!("{err}");
         return 1;
     }
-    println!("Watching {}. A file is reported once its size stays the same for a second.", folder.display());
+    println!(
+        "Watching {}. A file is reported once its size stays the same for a second.",
+        folder.display()
+    );
     let mut seen: Vec<(PathBuf, u64, Instant, bool)> = Vec::new();
     loop {
         let Ok(read) = std::fs::read_dir(&folder) else {
@@ -169,17 +185,22 @@ fn write_png(image: &RgbaImage, path: &Path) -> i32 {
         Err(err) => {
             eprintln!("{err}");
             1
-        },
+        }
     }
 }
 
 fn is_image(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
         Some("png" | "jpg" | "jpeg" | "webp" | "tif" | "tiff")
     )
 }
 
 fn data_root() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("Shotsmith")
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Shotsmith")
 }

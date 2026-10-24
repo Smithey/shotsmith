@@ -58,7 +58,10 @@ pub fn print_path(window: &tauri::WebviewWindow, path: &Path) -> Result<(), Stri
     let size = image.size();
     let view = unsafe {
         let allocated: *mut AnyObject = msg_send![NSImageView::class(), alloc];
-        NSImageView::initWithFrame(std::mem::transmute(allocated), CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(size.width, size.height)))
+        NSImageView::initWithFrame(
+            std::mem::transmute(allocated),
+            CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(size.width, size.height)),
+        )
     };
     view.setImage(Some(&image));
     let operation = NSPrintOperation::printOperationWithView(&view);

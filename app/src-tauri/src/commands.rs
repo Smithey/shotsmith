@@ -3,7 +3,8 @@ use crate::state::{
     DonutSlotPayload, EditorSession, HudPayload, LastRegion,
 };
 use crate::windows::{
-    arm_hud_dismiss, dismiss_donut, hide_labeled, open_view, place_hud, place_near_cursor, show_overlays,
+    arm_hud_dismiss, cancel_overlays, dismiss_donut, hide_labeled, open_view, place_hud,
+    place_near_cursor, show_overlays,
 };
 use chrono::Local;
 use image::RgbaImage;
@@ -16,6 +17,7 @@ use shotsmith_history::CaptureRecord;
 use shotsmith_output::{self, write_atomic};
 use shotsmith_platform::{self, PermissionState};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use uuid::Uuid;
@@ -30,7 +32,11 @@ pub fn settings_get(state: State<AppState>) -> Result<crate::state::Settings, St
 }
 
 #[tauri::command]
-pub fn settings_set(app: AppHandle, state: State<AppState>, settings: crate::state::Settings) -> Result<(), String> {
+pub fn settings_set(
+    app: AppHandle,
+    state: State<AppState>,
+    settings: crate::state::Settings,
+) -> Result<(), String> {
     {
         let mut current = state.settings.lock().map_err(err_string)?;
         *current = settings.clone();
@@ -66,7 +72,11 @@ pub fn presets_list(state: State<AppState>) -> Result<Vec<Preset>, String> {
 }
 
 #[tauri::command]
-pub fn presets_save(app: AppHandle, state: State<AppState>, preset: Preset) -> Result<Vec<Preset>, String> {
+pub fn presets_save(
+    app: AppHandle,
+    state: State<AppState>,
+    preset: Preset,
+) -> Result<Vec<Preset>, String> {
     let saved = {
         let mut presets = state.presets.lock().map_err(err_string)?;
         if let Some(existing) = presets.iter_mut().find(|item| item.id == preset.id) {
@@ -86,7 +96,11 @@ pub fn presets_save(app: AppHandle, state: State<AppState>, preset: Preset) -> R
 }
 
 #[tauri::command]
-pub fn presets_delete(app: AppHandle, state: State<AppState>, id: String) -> Result<Vec<Preset>, String> {
+pub fn presets_delete(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<Vec<Preset>, String> {
     let saved = {
         let mut presets = state.presets.lock().map_err(err_string)?;
         presets.retain(|preset| preset.id != id || preset.builtin);
@@ -119,7 +133,12 @@ pub fn presets_export(state: State<AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn filename_preview(state: State<AppState>, pattern: String, width: u32, height: u32) -> Result<String, String> {
+pub fn filename_preview(
+    state: State<AppState>,
+    pattern: String,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
     let settings = state.settings.lock().map_err(err_string)?;
     Ok(render_pattern(
         &pattern,
@@ -174,6 +193,20 @@ pub fn overlay_state(state: State<AppState>) -> Result<Vec<DisplayPayload>, Stri
     Ok(state.displays.lock().map_err(err_string)?.clone())
 }
 
+static CAPTURE_BUSY: AtomicBool = AtomicBool::new(false);
+
+struct CaptureBusy;
+
+impl Drop for CaptureBusy {
+    fn drop(&mut self) {
+        CAPTURE_BUSY.store(false, Ordering::Release);
+    }
+}
+
+fn acquire_capture() -> bool {
+    !CAPTURE_BUSY.swap(true, Ordering::AcqRel)
+}
+
 #[tauri::command]
 pub fn capture_begin(app: AppHandle, state: State<AppState>, mode: String) -> Result<(), String> {
     let next = match mode.as_str() {
@@ -185,14 +218,44 @@ pub fn capture_begin(app: AppHandle, state: State<AppState>, mode: String) -> Re
         "region" => "region",
         other => return Err(format!("Unknown capture mode {other}.")),
     };
-    if next == "scroll" && cfg!(target_os = "macos") && !shotsmith_platform::accessibility_granted() {
+    if next == "scroll" && cfg!(target_os = "macos") && !shotsmith_platform::accessibility_granted()
+    {
         let _ = shotsmith_platform::request_accessibility();
-        return Err("Scrolling needs Accessibility. Turn it on for Shotsmith, then try again.".into());
+        return Err(
+            "Scrolling needs Accessibility. Turn it on for Shotsmith, then try again.".into(),
+        );
     }
-    *state.capture_mode.lock().map_err(err_string)? = next.into();
-    match next {
-        "screen" => capture_screen(&app, &state),
-        _ => begin_overlay(&app, &state, true),
+    drop(state);
+    if !acquire_capture() {
+        return Ok(());
+    }
+    let mode = next.to_string();
+    let queued = app.clone();
+    let work = move || {
+        let _busy = CaptureBusy;
+        let state = queued.state::<AppState>();
+        if let Ok(mut slot) = state.capture_mode.lock() {
+            *slot = mode.clone();
+        }
+        let result = if mode == "screen" {
+            capture_screen(&queued, &state)
+        } else {
+            begin_overlay(&queued, &state, true)
+        };
+        if let Err(err) = &result {
+            report_capture_error(&queued, err);
+        }
+        result
+    };
+    // Shortcuts and the tray menu call this on the main thread. Waiting here
+    // for a screenshot deadlocks WindowServer, so the work runs elsewhere.
+    if on_main_thread() {
+        std::thread::spawn(move || {
+            let _ = work();
+        });
+        Ok(())
+    } else {
+        work()
     }
 }
 
@@ -224,11 +287,20 @@ pub fn relaunch(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn capture_cancel(app: AppHandle, state: State<AppState>) -> Result<(), String> {
-    if let Ok(mut preset) = state.capture_preset.lock() {
-        *preset = None;
+pub fn capture_cancel(app: AppHandle, _state: State<AppState>) -> Result<(), String> {
+    if on_main_thread() {
+        cancel_overlays(&app);
+        return Ok(());
     }
-    hide_on_main(&app, "overlay-")
+    let (tx, rx) = std::sync::mpsc::channel();
+    let queued = app.clone();
+    app.run_on_main_thread(move || {
+        cancel_overlays(&queued);
+        let _ = tx.send(());
+    })
+    .map_err(err_string)?;
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "The window did not close.".to_string())
 }
 
 #[tauri::command]
@@ -248,14 +320,19 @@ pub fn capture_confirm(
     cursor_y: f32,
     mode: String,
 ) -> Result<String, String> {
-    let image = if let Some(id) = window_id {
-        shotsmith_platform::capture_window(id).or_else(|_| crop_frozen(&state, display_id, x, y, width, height))?
-    } else {
-        crop_frozen(&state, display_id, x, y, width, height)?
-    };
+    // The frozen frame was taken before the overlay existed. Capturing again
+    // while that shield is up is what locked the session.
+    let _ = window_id;
+    let image = crop_frozen(&state, display_id, x, y, width, height)?;
     {
         let mut last = state.last_region.lock().map_err(err_string)?;
-        *last = Some(LastRegion { display_id, x, y, width, height });
+        *last = Some(LastRegion {
+            display_id,
+            x,
+            y,
+            width,
+            height,
+        });
     }
     hide_on_main(&app, "overlay-")?;
     let scale = display_scale(&state, display_id);
@@ -264,7 +341,18 @@ pub fn capture_confirm(
     } else {
         image
     };
-    store_and_route(&app, &state, image, &mode, source_app, window_title, include_cursor, cursor_x, cursor_y, scale)
+    store_and_route(
+        &app,
+        &state,
+        image,
+        &mode,
+        source_app,
+        window_title,
+        include_cursor,
+        cursor_x,
+        cursor_y,
+        scale,
+    )
 }
 
 #[tauri::command]
@@ -273,23 +361,53 @@ pub fn capture_repeat(app: AppHandle, state: State<AppState>) -> Result<String, 
     let Some(last) = last else {
         return Err("There is no previous region yet.".into());
     };
-    let _ = begin_overlay(&app, &state, false);
-    let image = crop_frozen(&state, last.display_id, last.x, last.y, last.width, last.height)?;
-    hide_on_main(&app, "overlay-")?;
-    let settings = state.settings.lock().map_err(err_string)?.clone();
-    let scale = display_scale(&state, last.display_id);
-    store_and_route(
-        &app,
-        &state,
-        image,
-        "region",
-        Some("Screen".into()),
-        Some("Repeat".into()),
-        settings.include_cursor,
-        24.0,
-        24.0,
-        scale,
-    )
+    drop(state);
+    if !acquire_capture() {
+        return Ok(String::new());
+    }
+    let queued = app.clone();
+    let work = move || {
+        let _busy = CaptureBusy;
+        let state = queued.state::<AppState>();
+        let result = (|| {
+            begin_overlay(&queued, &state, false)?;
+            let image = crop_frozen(
+                &state,
+                last.display_id,
+                last.x,
+                last.y,
+                last.width,
+                last.height,
+            )?;
+            hide_on_main(&queued, "overlay-")?;
+            let settings = state.settings.lock().map_err(err_string)?.clone();
+            let scale = display_scale(&state, last.display_id);
+            store_and_route(
+                &queued,
+                &state,
+                image,
+                "region",
+                Some("Screen".into()),
+                Some("Repeat".into()),
+                settings.include_cursor,
+                24.0,
+                24.0,
+                scale,
+            )
+        })();
+        if let Err(err) = &result {
+            report_capture_error(&queued, err);
+        }
+        result
+    };
+    if on_main_thread() {
+        std::thread::spawn(move || {
+            let _ = work();
+        });
+        Ok(String::new())
+    } else {
+        work()
+    }
 }
 
 #[tauri::command]
@@ -297,7 +415,11 @@ pub fn capture_countdown(app: AppHandle, state: State<AppState>) -> Result<(), S
     let settings = state.settings.lock().map_err(err_string)?.clone();
     let hud = HudPayload {
         title: format!("Capturing in {}", settings.timed_seconds),
-        detail: if settings.timed_mode == "screen" { "Full screen".into() } else { "Then pick a region".into() },
+        detail: if settings.timed_mode == "screen" {
+            "Full screen".into()
+        } else {
+            "Then pick a region".into()
+        },
         image_path: String::new(),
         capture_id: String::new(),
         countdown: Some(settings.timed_seconds),
@@ -308,15 +430,17 @@ pub fn capture_countdown(app: AppHandle, state: State<AppState>) -> Result<(), S
 
 #[tauri::command]
 pub fn capture_countdown_done(app: AppHandle, state: State<AppState>) -> Result<(), String> {
-    let mode = state.settings.lock().map_err(err_string)?.timed_mode.clone();
+    let mode = state
+        .settings
+        .lock()
+        .map_err(err_string)?
+        .timed_mode
+        .clone();
     if let Some(window) = app.get_webview_window("hud") {
         let _ = window.hide();
     }
-    if mode == "screen" {
-        capture_screen(&app, &state)
-    } else {
-        begin_overlay(&app, &state, true)
-    }
+    let mode = if mode == "screen" { "screen" } else { "region" };
+    capture_begin(app, state, mode.into())
 }
 
 #[tauri::command]
@@ -350,14 +474,21 @@ pub fn history_delete(app: AppHandle, state: State<AppState>, id: String) -> Res
 
 #[tauri::command]
 pub fn editor_open(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
-    let record = state.history.lock().map_err(err_string)?.get(&id).map_err(err_string)?;
+    let record = state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .get(&id)
+        .map_err(err_string)?;
     let Some(record) = record else {
         return Err("That capture is no longer in History.".into());
     };
     let (document, _) = if let Some(path) = &record.document_path {
         shotsmith_output::read_shotsmith(std::path::Path::new(path)).map_err(err_string)?
     } else {
-        let image = image::open(&record.original_path).map_err(err_string)?.to_rgba8();
+        let image = image::open(&record.original_path)
+            .map_err(err_string)?
+            .to_rgba8();
         (Document::new(image.width(), image.height()), Vec::new())
     };
     let title = capture_title(&record);
@@ -393,7 +524,12 @@ fn capture_title(record: &CaptureRecord) -> String {
         .window_title
         .clone()
         .filter(|title| !title.trim().is_empty())
-        .or_else(|| record.source_app.clone().filter(|title| !title.trim().is_empty()))
+        .or_else(|| {
+            record
+                .source_app
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+        })
         .unwrap_or_else(|| "Capture".into())
 }
 
@@ -415,7 +551,11 @@ pub(crate) fn push_pixels(session: &mut EditorSession, pixels: Option<Vec<u8>>) 
 
 /// One document step and one pixel step, or neither. `pixels` is the file from
 /// before the edit. `None` means the edit did not change the picture.
-pub(crate) fn record_edit(session: &mut EditorSession, next: Document, pixels: Option<Vec<u8>>) -> bool {
+pub(crate) fn record_edit(
+    session: &mut EditorSession,
+    next: Document,
+    pixels: Option<Vec<u8>>,
+) -> bool {
     if session.stack.current() == &next && pixels.is_none() {
         return false;
     }
@@ -426,7 +566,11 @@ pub(crate) fn record_edit(session: &mut EditorSession, next: Document, pixels: O
 }
 
 fn swap_pixels(session: &mut EditorSession, undo: bool) -> Result<bool, String> {
-    let entry = if undo { session.pixels_past.pop() } else { session.pixels_future.pop() };
+    let entry = if undo {
+        session.pixels_past.pop()
+    } else {
+        session.pixels_future.pop()
+    };
     let Some(entry) = entry else {
         return Ok(false);
     };
@@ -460,9 +604,17 @@ pub(crate) fn with_pixels(session: &EditorSession, changed: bool) -> serde_json:
 
 pub(crate) fn ensure_image(session: &mut EditorSession) -> Result<RgbaImage, String> {
     if session.image.is_none() {
-        session.image = Some(image::open(&session.image_path).map_err(err_string)?.to_rgba8());
+        session.image = Some(
+            image::open(&session.image_path)
+                .map_err(err_string)?
+                .to_rgba8(),
+        );
     }
-    Ok(session.image.as_ref().expect("image was just stored").clone())
+    Ok(session
+        .image
+        .as_ref()
+        .expect("image was just stored")
+        .clone())
 }
 
 fn session_json(session: &EditorSession) -> serde_json::Value {
@@ -480,21 +632,36 @@ fn session_json(session: &EditorSession) -> serde_json::Value {
 pub fn editor_image(window: WebviewWindow, state: State<AppState>) -> Result<String, String> {
     let id = editor_key(&window)?;
     let editors = state.editors.lock().map_err(err_string)?;
-    let session = editors.get(&id).ok_or_else(|| "No capture is open.".to_string())?;
+    let session = editors
+        .get(&id)
+        .ok_or_else(|| "No capture is open.".to_string())?;
     let bytes = std::fs::read(&session.image_path).map_err(err_string)?;
-    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes))
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        bytes,
+    ))
 }
 
 #[tauri::command]
-pub fn editor_state(window: WebviewWindow, state: State<AppState>) -> Result<serde_json::Value, String> {
+pub fn editor_state(
+    window: WebviewWindow,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
     let id = editor_key(&window)?;
     let editors = state.editors.lock().map_err(err_string)?;
-    let session = editors.get(&id).ok_or_else(|| "No capture is open.".to_string())?;
+    let session = editors
+        .get(&id)
+        .ok_or_else(|| "No capture is open.".to_string())?;
     Ok(session_json(session))
 }
 
 #[tauri::command]
-pub fn editor_commit(window: WebviewWindow, app: AppHandle, state: State<AppState>, document: Document) -> Result<serde_json::Value, String> {
+pub fn editor_commit(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<AppState>,
+    document: Document,
+) -> Result<serde_json::Value, String> {
     let id = editor_key(&window)?;
     let (capture_id, image_path, changed, response) = {
         let mut editors = state.editors.lock().map_err(err_string)?;
@@ -519,7 +686,11 @@ pub fn editor_commit(window: WebviewWindow, app: AppHandle, state: State<AppStat
 }
 
 #[tauri::command]
-pub fn editor_undo(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<serde_json::Value, String> {
+pub fn editor_undo(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
     let id = editor_key(&window)?;
     let (capture_id, image_path, response) = {
         let mut editors = state.editors.lock().map_err(err_string)?;
@@ -544,7 +715,11 @@ pub fn editor_undo(window: WebviewWindow, app: AppHandle, state: State<AppState>
 }
 
 #[tauri::command]
-pub fn editor_redo(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<serde_json::Value, String> {
+pub fn editor_redo(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
     let id = editor_key(&window)?;
     let (capture_id, image_path, response) = {
         let mut editors = state.editors.lock().map_err(err_string)?;
@@ -569,14 +744,24 @@ pub fn editor_redo(window: WebviewWindow, app: AppHandle, state: State<AppState>
 }
 
 #[tauri::command]
-pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>, x: i32, y: i32, width: i32, height: i32) -> Result<serde_json::Value, String> {
+pub fn editor_crop(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<AppState>,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<serde_json::Value, String> {
     let id = editor_key(&window)?;
     let mut editors = state.editors.lock().map_err(err_string)?;
     let Some(session) = editors.get_mut(&id) else {
         return Err("No capture is open.".into());
     };
     let before = std::fs::read(&session.image_path).map_err(err_string)?;
-    let image = image::load_from_memory(&before).map_err(err_string)?.to_rgba8();
+    let image = image::load_from_memory(&before)
+        .map_err(err_string)?
+        .to_rgba8();
     let iw = image.width() as i32;
     let ih = image.height() as i32;
     if iw < 2 || ih < 2 || width < 2 || height < 2 {
@@ -589,11 +774,25 @@ pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>
     if x == 0 && y == 0 && width == image.width() && height == image.height() {
         return Ok(session_json(session));
     }
-    let cropped = shotsmith_capture::crop(&image, PixelRect { x, y, width, height });
+    let cropped = shotsmith_capture::crop(
+        &image,
+        PixelRect {
+            x,
+            y,
+            width,
+            height,
+        },
+    );
     let png = shotsmith_output::encode(&cropped, ImageFormat::Png, 1.0).map_err(err_string)?;
     write_atomic(std::path::Path::new(&session.image_path), &png).map_err(err_string)?;
     let mut document = session.stack.current().clone();
-    shotsmith_core::crop_document(&mut document, x as f32, y as f32, cropped.width() as f32, cropped.height() as f32);
+    shotsmith_core::crop_document(
+        &mut document,
+        x as f32,
+        y as f32,
+        cropped.width() as f32,
+        cropped.height() as f32,
+    );
     record_edit(session, document, Some(before));
     session.beautify_base = None;
     session.image = Some(cropped);
@@ -606,7 +805,11 @@ pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>
 }
 
 #[tauri::command]
-pub fn editor_copy(window: WebviewWindow, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+pub fn editor_copy(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
     let id = editor_key(&window)?;
     crate::features::block_secrets(&state, &id)?;
     let image = {
@@ -625,7 +828,13 @@ pub fn editor_copy(window: WebviewWindow, app: AppHandle, state: State<AppState>
 }
 
 #[tauri::command]
-pub fn editor_save(window: WebviewWindow, app: AppHandle, state: State<AppState>, preset_id: Option<String>, save_as: Option<String>) -> Result<String, String> {
+pub fn editor_save(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<AppState>,
+    preset_id: Option<String>,
+    save_as: Option<String>,
+) -> Result<String, String> {
     let id = editor_key(&window)?;
     crate::features::block_secrets(&state, &id)?;
     let (capture_id, image, document, image_path) = {
@@ -651,7 +860,9 @@ pub fn editor_save(window: WebviewWindow, app: AppHandle, state: State<AppState>
     } else {
         let preset = preset_by_id(&state, preset_id)?;
         let wants_copy = preset.folder.is_none()
-            || preset.after_save.contains(&shotsmith_core::AfterSaveAction::CopyImage);
+            || preset
+                .after_save
+                .contains(&shotsmith_core::AfterSaveAction::CopyImage);
         if wants_copy {
             clipboard_image = Some(image.clone());
         }
@@ -673,7 +884,14 @@ pub fn editor_save(window: WebviewWindow, app: AppHandle, state: State<AppState>
             let _ = copy_image(&image);
         }
         let state = app_for_ui.state::<AppState>();
-        let _ = show_hud(&app_for_ui, &state, "Saved", &hud_detail, &hud_id, &hud_image);
+        let _ = show_hud(
+            &app_for_ui,
+            &state,
+            "Saved",
+            &hud_detail,
+            &hud_id,
+            &hud_image,
+        );
     })
     .map_err(err_string)?;
     Ok(detail)
@@ -682,21 +900,42 @@ pub fn editor_save(window: WebviewWindow, app: AppHandle, state: State<AppState>
 #[tauri::command]
 pub fn editor_dirty(window: WebviewWindow, state: State<AppState>) -> Result<bool, String> {
     let id = editor_key(&window)?;
-    Ok(state.editors.lock().map_err(err_string)?.get(&id).map(|session| session.dirty).unwrap_or(false))
+    Ok(state
+        .editors
+        .lock()
+        .map_err(err_string)?
+        .get(&id)
+        .map(|session| session.dirty)
+        .unwrap_or(false))
 }
 
 #[tauri::command]
 pub fn donut_state(state: State<AppState>) -> Result<DonutPayload, String> {
-    state.donut.lock().map_err(err_string)?.clone().ok_or_else(|| "The donut is not open.".into())
+    state
+        .donut
+        .lock()
+        .map_err(err_string)?
+        .clone()
+        .ok_or_else(|| "The donut is not open.".into())
 }
 
 #[tauri::command]
 pub fn hud_state(state: State<AppState>) -> Result<HudPayload, String> {
-    state.hud.lock().map_err(err_string)?.clone().ok_or_else(|| "No HUD is open.".into())
+    state
+        .hud
+        .lock()
+        .map_err(err_string)?
+        .clone()
+        .ok_or_else(|| "No HUD is open.".into())
 }
 
 #[tauri::command]
-pub fn donut_act(app: AppHandle, state: State<AppState>, action: String, keep_open: bool) -> Result<(), String> {
+pub fn donut_act(
+    app: AppHandle,
+    state: State<AppState>,
+    action: String,
+    keep_open: bool,
+) -> Result<(), String> {
     let payload = state.donut.lock().map_err(err_string)?.clone();
     let Some(payload) = payload else {
         return Err("The donut is not open.".into());
@@ -704,33 +943,50 @@ pub fn donut_act(app: AppHandle, state: State<AppState>, action: String, keep_op
     // Window and clipboard calls have to run on the main thread. Doing them
     // inside this command destroys the webview while it is still answering
     // the click, which aborts the process.
-    app.clone().run_on_main_thread(move || {
-        let state = app.state::<AppState>();
-        if !keep_open {
-            if let Ok(mut donut) = state.donut.lock() {
-                *donut = None;
+    app.clone()
+        .run_on_main_thread(move || {
+            let state = app.state::<AppState>();
+            if !keep_open {
+                if let Ok(mut donut) = state.donut.lock() {
+                    *donut = None;
+                }
+                hide_labeled(&app, "donut");
             }
-            hide_labeled(&app, "donut");
-        }
-        if let Err(err) = run_action(&app, &state, &payload.capture_id, &action) {
-            let _ = show_hud(
-                &app,
-                &state,
-                "Could not finish",
-                &err,
-                &payload.capture_id,
-                &payload.image_path,
-            );
-        }
-    })
-    .map_err(err_string)
+            if let Err(err) = run_action(&app, &state, &payload.capture_id, &action) {
+                let _ = show_hud(
+                    &app,
+                    &state,
+                    "Could not finish",
+                    &err,
+                    &payload.capture_id,
+                    &payload.image_path,
+                );
+            }
+        })
+        .map_err(err_string)
 }
 
 #[tauri::command]
 pub fn pin_open(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
-    state.history.lock().map_err(err_string)?.set_pinned(&id, true).map_err(err_string)?;
+    state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .set_pinned(&id, true)
+        .map_err(err_string)?;
     let (x, y) = shotsmith_platform::cursor_position();
-    open_view(&app, &format!("pin-{id}"), &format!("pin&id={id}"), "Pin", x as f64, y as f64, 360.0, 240.0, false, false)?;
+    open_view(
+        &app,
+        &format!("pin-{id}"),
+        &format!("pin&id={id}"),
+        "Pin",
+        x as f64,
+        y as f64,
+        360.0,
+        240.0,
+        false,
+        false,
+    )?;
     crate::rebuild_tray(&app).map_err(err_string)
 }
 
@@ -744,7 +1000,12 @@ pub fn pin_close(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn reveal_capture(state: State<AppState>, id: String) -> Result<(), String> {
-    let record = state.history.lock().map_err(err_string)?.get(&id).map_err(err_string)?;
+    let record = state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .get(&id)
+        .map_err(err_string)?;
     let Some(record) = record else {
         return Err("That capture is no longer in History.".into());
     };
@@ -758,12 +1019,19 @@ pub fn open_history(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn history_copy(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
-    let record = state.history.lock().map_err(err_string)?.get(&id).map_err(err_string)?;
+    let record = state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .get(&id)
+        .map_err(err_string)?;
     let Some(record) = record else {
         return Err("That capture is no longer in History.".into());
     };
     crate::features::block_secrets(&state, &id)?;
-    let image = image::open(&record.original_path).map_err(err_string)?.to_rgba8();
+    let image = image::open(&record.original_path)
+        .map_err(err_string)?
+        .to_rgba8();
     let image = with_annotations(&record, &image);
     let preview = preview_file(&record.original_path);
     let path = if preview.exists() {
@@ -776,7 +1044,14 @@ pub fn history_copy(app: AppHandle, state: State<AppState>, id: String) -> Resul
     app.run_on_main_thread(move || {
         let _ = copy_image(&image);
         let state = app_for_ui.state::<AppState>();
-        let _ = show_hud(&app_for_ui, &state, "Copied to clipboard", "From History", &capture_id, &path);
+        let _ = show_hud(
+            &app_for_ui,
+            &state,
+            "Copied to clipboard",
+            "From History",
+            &capture_id,
+            &path,
+        );
     })
     .map_err(err_string)
 }
@@ -789,11 +1064,18 @@ pub fn open_settings(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn feature_notice(app: AppHandle, message: String) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-    app.dialog().message(message).kind(MessageDialogKind::Info).show(|_| {});
+    app.dialog()
+        .message(message)
+        .kind(MessageDialogKind::Info)
+        .show(|_| {});
 }
 
 #[tauri::command]
-pub fn finish_onboarding(app: AppHandle, state: State<AppState>, after_capture: String) -> Result<(), String> {
+pub fn finish_onboarding(
+    app: AppHandle,
+    state: State<AppState>,
+    after_capture: String,
+) -> Result<(), String> {
     let mut settings = state.settings.lock().map_err(err_string)?.clone();
     settings.onboarding_done = true;
     settings.after_capture = after_capture;
@@ -816,11 +1098,12 @@ pub fn open_image(app: AppHandle, state: State<AppState>) -> Result<(), String> 
     // The menu calls this on that thread, so a wait here would deadlock.
     drop(state);
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut builder = app
-        .dialog()
-        .file()
-        .set_title("Open image")
-        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "heic", "bmp"]);
+    let mut builder = app.dialog().file().set_title("Open image").add_filter(
+        "Images",
+        &[
+            "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "heic", "bmp",
+        ],
+    );
     if let Some(window) = app
         .get_webview_window("editor")
         .or_else(|| app.get_webview_window("history"))
@@ -837,10 +1120,23 @@ pub fn open_image(app: AppHandle, state: State<AppState>) -> Result<(), String> 
         };
         let path = path.into_path().map_err(|err| err.to_string())?;
         let image = image::open(&path).map_err(err_string)?.to_rgba8();
-        let title = path.file_name().map(|name| name.to_string_lossy().to_string());
+        let title = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
         let opened = app.clone();
         let state = app.state::<AppState>();
-        let id = store_and_route(&app, &state, image, "region", Some("File".into()), title, false, 0.0, 0.0, 1.0)?;
+        let id = store_and_route(
+            &app,
+            &state,
+            image,
+            "region",
+            Some("File".into()),
+            title,
+            false,
+            0.0,
+            0.0,
+            1.0,
+        )?;
         editor_open(opened, state, id)
     };
     if on_main_thread() {
@@ -857,9 +1153,24 @@ pub fn open_image(app: AppHandle, state: State<AppState>) -> Result<(), String> 
 pub fn edit_clipboard(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(err_string)?;
     let image = clipboard.get_image().map_err(err_string)?;
-    let buffer = RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())
-        .ok_or_else(|| "The clipboard image could not be read.".to_string())?;
-    let id = store_and_route(&app, &state, buffer, "region", Some("Clipboard".into()), None, false, 0.0, 0.0, 1.0)?;
+    let buffer = RgbaImage::from_raw(
+        image.width as u32,
+        image.height as u32,
+        image.bytes.into_owned(),
+    )
+    .ok_or_else(|| "The clipboard image could not be read.".to_string())?;
+    let id = store_and_route(
+        &app,
+        &state,
+        buffer,
+        "region",
+        Some("Clipboard".into()),
+        None,
+        false,
+        0.0,
+        0.0,
+        1.0,
+    )?;
     editor_open(app, state, id)
 }
 
@@ -887,7 +1198,11 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
 pub async fn pick_save(app: AppHandle, suggested: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut builder = app.dialog().file().set_title("Save capture").set_file_name(&suggested);
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_title("Save capture")
+        .set_file_name(&suggested);
     if let Some(window) = app.get_webview_window("editor") {
         builder = builder.set_parent(&window);
     }
@@ -943,7 +1258,8 @@ fn hide_on_main(app: &AppHandle, prefix: &str) -> Result<(), String> {
         let _ = tx.send(());
     })
     .map_err(err_string)?;
-    rx.recv_timeout(std::time::Duration::from_secs(2)).map_err(|_| "The window did not close.".to_string())
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "The window did not close.".to_string())
 }
 
 fn begin_overlay(app: &AppHandle, state: &State<AppState>, present: bool) -> Result<(), String> {
@@ -1016,14 +1332,57 @@ fn begin_overlay(app: &AppHandle, state: &State<AppState>, present: bool) -> Res
     if !present {
         return Ok(());
     }
+    if let Err(err) = present_overlays(app) {
+        let _ = hide_on_main(app, "overlay-");
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn present_overlays(app: &AppHandle) -> Result<(), String> {
     if on_main_thread() {
         return show_overlays(app);
     }
+    let (tx, rx) = std::sync::mpsc::channel();
     let queued = app.clone();
     app.run_on_main_thread(move || {
-        let _ = show_overlays(&queued);
+        let _ = tx.send(show_overlays(&queued));
     })
-    .map_err(err_string)
+    .map_err(err_string)?;
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "The capture window did not open.".to_string())?
+}
+
+fn report_capture_error(app: &AppHandle, message: &str) {
+    let queued = app.clone();
+    let message = message.to_string();
+    let present = move || {
+        if let Some(state) = queued.try_state::<AppState>() {
+            let _ = show_capture_failure(&queued, &state, &message);
+        }
+    };
+    if on_main_thread() {
+        present();
+    } else {
+        let _ = app.run_on_main_thread(present);
+    }
+}
+
+fn show_capture_failure(
+    app: &AppHandle,
+    state: &State<AppState>,
+    message: &str,
+) -> Result<(), String> {
+    *state.hud.lock().map_err(err_string)? = Some(HudPayload {
+        title: "Capture failed".into(),
+        detail: message.into(),
+        image_path: String::new(),
+        capture_id: String::new(),
+        countdown: None,
+    });
+    place_hud(app)?;
+    arm_hud_dismiss(app);
+    Ok(())
 }
 
 fn capture_screen(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
@@ -1032,31 +1391,85 @@ fn capture_screen(app: &AppHandle, state: &State<AppState>) -> Result<(), String
     let displays = state.displays.lock().map_err(err_string)?.clone();
     let display = displays
         .iter()
-        .find(|display| cx >= display.x && cy >= display.y && cx < display.x + display.width as i32 && cy < display.y + display.height as i32)
+        .find(|display| {
+            cx >= display.x
+                && cy >= display.y
+                && cx < display.x + display.width as i32
+                && cy < display.y + display.height as i32
+        })
         .cloned()
         .or_else(|| displays.first().cloned())
         .ok_or_else(|| "No display to capture.".to_string())?;
     hide_on_main(app, "overlay-")?;
     let image = crop_frozen(state, display.id, 0, 0, display.width, display.height)?;
-    store_and_route(app, state, image, "screen", Some(display.name), None, false, 0.0, 0.0, display.scale).map(|_| ())
+    store_and_route(
+        app,
+        state,
+        image,
+        "screen",
+        Some(display.name),
+        None,
+        false,
+        0.0,
+        0.0,
+        display.scale,
+    )
+    .map(|_| ())
 }
 
-fn crop_frozen(state: &State<AppState>, display_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<RgbaImage, String> {
+fn crop_frozen(
+    state: &State<AppState>,
+    display_id: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<RgbaImage, String> {
     let frozen = state.frozen.lock().map_err(err_string)?;
     let Some(frozen) = frozen.as_ref() else {
         return Err("The screen is no longer frozen. Start the capture again.".into());
     };
-    let display = frozen.iter().find(|item| item.info.id == display_id).or(frozen.first());
+    let display = frozen
+        .iter()
+        .find(|item| item.info.id == display_id)
+        .or(frozen.first());
     let Some(display) = display else {
         return Err("That display is not available.".into());
     };
-    Ok(shotsmith_capture::crop(&display.image, PixelRect { x: x as i32, y: y as i32, width, height }))
+    Ok(shotsmith_capture::crop(
+        &display.image,
+        PixelRect {
+            x: x as i32,
+            y: y as i32,
+            width,
+            height,
+        },
+    ))
 }
 
-pub(crate) fn import_external(app: &AppHandle, state: &State<AppState>, path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn import_external(
+    app: &AppHandle,
+    state: &State<AppState>,
+    path: &std::path::Path,
+) -> Result<(), String> {
     let image = image::open(path).map_err(err_string)?.to_rgba8();
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("Watched file").to_string();
-    store_and_route(app, state, image, "watch", Some("Watch folder".into()), Some(name), false, 0.0, 0.0, 1.0)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Watched file")
+        .to_string();
+    store_and_route(
+        app,
+        state,
+        image,
+        "watch",
+        Some("Watch folder".into()),
+        Some(name),
+        false,
+        0.0,
+        0.0,
+        1.0,
+    )?;
     Ok(())
 }
 
@@ -1112,7 +1525,9 @@ fn store_and_route(
         history.insert(&record).map_err(err_string)?;
         let settings = state.settings.lock().map_err(err_string)?.clone();
         if settings.keep_history {
-            let removed = history.prune(settings.history_limit, settings.history_days).map_err(err_string)?;
+            let removed = history
+                .prune(settings.history_limit, settings.history_days)
+                .map_err(err_string)?;
             for old in removed {
                 if let Some(parent) = PathBuf::from(old.original_path).parent() {
                     let _ = std::fs::remove_dir_all(parent);
@@ -1132,19 +1547,40 @@ fn store_and_route(
     if let Some(preset_id) = forced_preset {
         let preset = preset_by_id(state, Some(preset_id))?;
         let saved = export_with_preset(state, &flat, &preset, scale, true)?;
-        show_hud(app, state, &format!("Saved with {}", preset.name), &saved.to_string_lossy(), &id, &original_path.to_string_lossy())?;
+        show_hud(
+            app,
+            state,
+            &format!("Saved with {}", preset.name),
+            &saved.to_string_lossy(),
+            &id,
+            &original_path.to_string_lossy(),
+        )?;
         crate::rebuild_tray(app).map_err(err_string)?;
         return Ok(id);
     }
     match settings.after_capture.as_str() {
         "copy" => {
             copy_image(&flat)?;
-            show_hud(app, state, "Copied to clipboard", "Also saved to History", &id, &original_path.to_string_lossy())?;
+            show_hud(
+                app,
+                state,
+                "Copied to clipboard",
+                "Also saved to History",
+                &id,
+                &original_path.to_string_lossy(),
+            )?;
         }
         "save" => {
             let preset = preset_by_id(state, None)?;
             let saved = export_with_preset(state, &flat, &preset, scale, true)?;
-            show_hud(app, state, "Saved", &saved.to_string_lossy(), &id, &original_path.to_string_lossy())?;
+            show_hud(
+                app,
+                state,
+                "Saved",
+                &saved.to_string_lossy(),
+                &id,
+                &original_path.to_string_lossy(),
+            )?;
         }
         "editor" => {
             editor_open(app.clone(), state.clone(), id.clone())?;
@@ -1165,7 +1601,18 @@ fn store_and_route(
             let spoken = shotsmith_platform::screen_reader_active();
             app.run_on_main_thread(move || {
                 if spoken {
-                    let _ = open_view(&queued, "actions", "actions", "Capture actions", 240.0, 80.0, 320.0, 460.0, true, false);
+                    let _ = open_view(
+                        &queued,
+                        "actions",
+                        "actions",
+                        "Capture actions",
+                        240.0,
+                        80.0,
+                        320.0,
+                        460.0,
+                        true,
+                        false,
+                    );
                 } else {
                     let _ = place_near_cursor(&queued, "donut", "donut", 300.0);
                 }
@@ -1185,7 +1632,11 @@ fn donut_slots(state: &State<AppState>) -> Result<Vec<DonutSlotPayload>, String>
     let mut slots = Vec::new();
     for (index, action) in settings.donut_slots.iter().take(count).enumerate() {
         let label = if let Some(id) = action.strip_prefix("preset:") {
-            presets.iter().find(|preset| preset.id == id).map(|preset| preset.name.clone()).unwrap_or_else(|| "Preset".into())
+            presets
+                .iter()
+                .find(|preset| preset.id == id)
+                .map(|preset| preset.name.clone())
+                .unwrap_or_else(|| "Preset".into())
         } else {
             match action.as_str() {
                 "copy" => "Copy",
@@ -1209,24 +1660,50 @@ fn donut_slots(state: &State<AppState>) -> Result<Vec<DonutSlotPayload>, String>
     Ok(slots)
 }
 
-fn run_action(app: &AppHandle, state: &State<AppState>, id: &str, action: &str) -> Result<(), String> {
-    let record = state.history.lock().map_err(err_string)?.get(id).map_err(err_string)?;
+fn run_action(
+    app: &AppHandle,
+    state: &State<AppState>,
+    id: &str,
+    action: &str,
+) -> Result<(), String> {
+    let record = state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .get(id)
+        .map_err(err_string)?;
     let Some(record) = record else {
         return Err("That capture is no longer in History.".into());
     };
-    let image = image::open(&record.original_path).map_err(err_string)?.to_rgba8();
+    let image = image::open(&record.original_path)
+        .map_err(err_string)?
+        .to_rgba8();
     let flat = with_annotations(&record, &image);
     match action {
         "copy" => {
             crate::features::block_secrets(state, id)?;
             copy_image(&flat)?;
-            show_hud(app, state, "Copied to clipboard", "Also saved to History", id, &record.original_path)
+            show_hud(
+                app,
+                state,
+                "Copied to clipboard",
+                "Also saved to History",
+                id,
+                &record.original_path,
+            )
         }
         "save" => {
             crate::features::block_secrets(state, id)?;
             let preset = preset_by_id(state, None)?;
             let saved = export_with_preset(state, &flat, &preset, record.scale, true)?;
-            show_hud(app, state, "Saved", &saved.to_string_lossy(), id, &record.original_path)
+            show_hud(
+                app,
+                state,
+                "Saved",
+                &saved.to_string_lossy(),
+                id,
+                &record.original_path,
+            )
         }
         "annotate" => editor_open(app.clone(), state.clone(), id.to_string()),
         "pin" => pin_open(app.clone(), state.clone(), id.to_string()),
@@ -1234,7 +1711,9 @@ fn run_action(app: &AppHandle, state: &State<AppState>, id: &str, action: &str) 
             crate::features::block_secrets(state, id)?;
             crate::features::share_capture(app, state, id, &flat)
         }
-        "copy-text" => crate::features::copy_capture_text(app, state, id, &image, &record.original_path),
+        "copy-text" => {
+            crate::features::copy_capture_text(app, state, id, &image, &record.original_path)
+        }
         "open-in" => crate::features::begin_open_in(app, state, id),
         "print" => {
             crate::features::block_secrets(state, id)?;
@@ -1243,7 +1722,14 @@ fn run_action(app: &AppHandle, state: &State<AppState>, id: &str, action: &str) 
         other if other.starts_with("preset:") => {
             let preset = preset_by_id(state, Some(other.trim_start_matches("preset:").into()))?;
             let saved = export_with_preset(state, &flat, &preset, record.scale, true)?;
-            show_hud(app, state, &format!("Saved with {}", preset.name), &saved.to_string_lossy(), id, &record.original_path)
+            show_hud(
+                app,
+                state,
+                &format!("Saved with {}", preset.name),
+                &saved.to_string_lossy(),
+                id,
+                &record.original_path,
+            )
         }
         other => Err(format!("Unknown action {other}.")),
     }
@@ -1253,10 +1739,20 @@ fn preset_by_id(state: &State<AppState>, id: Option<String>) -> Result<Preset, S
     let settings = state.settings.lock().map_err(err_string)?;
     let wanted = id.unwrap_or_else(|| settings.default_preset_id.clone());
     let presets = state.presets.lock().map_err(err_string)?;
-    presets.iter().find(|preset| preset.id == wanted).cloned().ok_or_else(|| "That preset is missing.".into())
+    presets
+        .iter()
+        .find(|preset| preset.id == wanted)
+        .cloned()
+        .ok_or_else(|| "That preset is missing.".into())
 }
 
-fn export_with_preset(state: &State<AppState>, image: &RgbaImage, preset: &Preset, scale: f32, use_clipboard: bool) -> Result<PathBuf, String> {
+fn export_with_preset(
+    state: &State<AppState>,
+    image: &RgbaImage,
+    preset: &Preset,
+    scale: f32,
+    use_clipboard: bool,
+) -> Result<PathBuf, String> {
     let Some(folder) = preset.folder.clone() else {
         if use_clipboard {
             copy_image(image)?;
@@ -1278,10 +1774,15 @@ fn export_with_preset(state: &State<AppState>, image: &RgbaImage, preset: &Prese
     let rendered = if preset.effects.is_empty() {
         image.clone()
     } else {
-        shotsmith_render::render(image, &Document::new(image.width(), image.height()), &preset.effects)
+        shotsmith_render::render(
+            image,
+            &Document::new(image.width(), image.height()),
+            &preset.effects,
+        )
     };
     let scaled = scale_output(&rendered, preset, scale);
-    let bytes = shotsmith_output::encode(&scaled, preset.format, preset.quality).map_err(err_string)?;
+    let bytes =
+        shotsmith_output::encode(&scaled, preset.format, preset.quality).map_err(err_string)?;
     let path = shotsmith_core::collision_path(
         &PathBuf::from(&folder).join(format!("{name}.{}", preset.format.extension())),
         |candidate| candidate.exists(),
@@ -1333,7 +1834,12 @@ fn display_scale(state: &State<AppState>, display_id: u32) -> f32 {
         .displays
         .lock()
         .ok()
-        .and_then(|displays| displays.iter().find(|display| display.id == display_id).map(|display| display.scale))
+        .and_then(|displays| {
+            displays
+                .iter()
+                .find(|display| display.id == display_id)
+                .map(|display| display.scale)
+        })
         .unwrap_or(1.0)
 }
 
@@ -1364,7 +1870,12 @@ pub(crate) fn flattened(session: &mut EditorSession) -> Result<RgbaImage, String
     Ok(shotsmith_render::render(&image, &document, &[]))
 }
 
-pub(crate) fn publish_edits(app: &AppHandle, state: &State<AppState>, id: &str, image_path: &str) -> Result<(), String> {
+pub(crate) fn publish_edits(
+    app: &AppHandle,
+    state: &State<AppState>,
+    id: &str,
+    image_path: &str,
+) -> Result<(), String> {
     let (document, image) = {
         let mut editors = state.editors.lock().map_err(err_string)?;
         let Some(session) = editors.get_mut(id) else {
@@ -1402,16 +1913,30 @@ fn attach_preview(record: &mut CaptureRecord) {
 }
 
 fn persist_document(state: &State<AppState>, id: &str, document: &Document) -> Result<(), String> {
-    let record = state.history.lock().map_err(err_string)?.get(id).map_err(err_string)?;
+    let record = state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .get(id)
+        .map_err(err_string)?;
     let Some(record) = record else {
         return Ok(());
     };
     let path = record.document_path.unwrap_or_else(|| {
-        PathBuf::from(&record.original_path).with_file_name("capture.shotsmith").to_string_lossy().to_string()
+        PathBuf::from(&record.original_path)
+            .with_file_name("capture.shotsmith")
+            .to_string_lossy()
+            .to_string()
     });
     let original = std::fs::read(&record.original_path).unwrap_or_default();
-    shotsmith_output::write_shotsmith(std::path::Path::new(&path), document, &original).map_err(err_string)?;
-    state.history.lock().map_err(err_string)?.set_document(id, &path).map_err(err_string)
+    shotsmith_output::write_shotsmith(std::path::Path::new(&path), document, &original)
+        .map_err(err_string)?;
+    state
+        .history
+        .lock()
+        .map_err(err_string)?
+        .set_document(id, &path)
+        .map_err(err_string)
 }
 
 fn copy_image(image: &RgbaImage) -> Result<(), String> {
@@ -1425,7 +1950,14 @@ fn copy_image(image: &RgbaImage) -> Result<(), String> {
         .map_err(err_string)
 }
 
-pub(crate) fn show_hud(app: &AppHandle, state: &State<AppState>, title: &str, detail: &str, id: &str, image_path: &str) -> Result<(), String> {
+pub(crate) fn show_hud(
+    app: &AppHandle,
+    state: &State<AppState>,
+    title: &str,
+    detail: &str,
+    id: &str,
+    image_path: &str,
+) -> Result<(), String> {
     let enabled = state.settings.lock().map_err(err_string)?.hud_enabled;
     if !enabled {
         return Ok(());
@@ -1443,7 +1975,13 @@ pub(crate) fn show_hud(app: &AppHandle, state: &State<AppState>, title: &str, de
 }
 
 fn format_from_path(path: &std::path::Path) -> ImageFormat {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("png").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "jpg" | "jpeg" => ImageFormat::Jpeg,
         "webp" => ImageFormat::Webp,
         "tif" | "tiff" => ImageFormat::Tiff,
@@ -1478,11 +2016,25 @@ mod pixel_history {
         };
         let before = std::fs::read(&session.image_path).unwrap();
         let decoded = image::load_from_memory(&before).unwrap().to_rgba8();
-        let cropped = shotsmith_capture::crop(&decoded, PixelRect { x: 1, y: 1, width: 4, height: 3 });
+        let cropped = shotsmith_capture::crop(
+            &decoded,
+            PixelRect {
+                x: 1,
+                y: 1,
+                width: 4,
+                height: 3,
+            },
+        );
         let png = shotsmith_output::encode(&cropped, ImageFormat::Png, 1.0).unwrap();
         write_atomic(std::path::Path::new(&session.image_path), &png).unwrap();
         let mut document = session.stack.current().clone();
-        shotsmith_core::crop_document(&mut document, 1.0, 1.0, cropped.width() as f32, cropped.height() as f32);
+        shotsmith_core::crop_document(
+            &mut document,
+            1.0,
+            1.0,
+            cropped.width() as f32,
+            cropped.height() as f32,
+        );
         assert!(record_edit(&mut session, document, Some(before)));
         assert!(session.stack.can_undo());
         assert_eq!(session.stack.current().width, 4);

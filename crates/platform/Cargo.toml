@@ -11,3 +11,10 @@ image = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 device_query = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFData", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDataProvider", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGImage"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
