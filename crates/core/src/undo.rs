@@ -65,6 +65,12 @@ impl UndoStack {
         self.current = next;
         true
     }
+
+    /// Replaces the current document without an undo step. Used when a live
+    /// control, such as Beautify, is updating the same edit.
+    pub fn set_current(&mut self, next: Document) {
+        self.current = next;
+    }
 }
 
 #[cfg(test)]

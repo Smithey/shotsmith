@@ -273,10 +273,13 @@ pub fn hide_labeled(app: &AppHandle, prefix: &str) {
     let mut hid_overlay = false;
     for (label, window) in app.webview_windows() {
         if label.starts_with(prefix) || label == prefix {
-            let _ = window.hide();
             if label.starts_with("overlay") {
+                // A hidden overlay can still sit above the page for a frame
+                // and swallow the scroll that starts a scrolling capture.
+                let _ = window.set_ignore_cursor_events(true);
                 hid_overlay = true;
             }
+            let _ = window.hide();
         }
     }
     if hid_overlay {

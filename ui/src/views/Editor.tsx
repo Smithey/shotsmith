@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, onRefresh, uid, SWATCHES, type AnnotationObject, type Document, type EditorState, type Preset, type SecretFinding, type TextLine } from "../api";
+import { api, onRefresh, uid, SWATCHES, type AnnotationObject, type AppChoice, type Document, type EditorState, type Preset, type SecretFinding, type TextLine } from "../api";
 import type { Effect } from "../bindings/Effect";
 import { isMac } from "../keys";
 import { bounds, drawCrop, drawDocument, hitCenter, hitHandle, hitsBox, hitTest, idOf, whenBitmapsLoad, type Handle } from "./draw";
@@ -55,7 +55,8 @@ export function Editor() {
   const [pickedLine, setPickedLine] = useState<number | null>(null);
   const [findings, setFindings] = useState<SecretFinding[]>([]);
   const [panel, setPanel] = useState<"" | "text" | "secrets" | "beautify" | "print" | "open">("");
-  const [apps, setApps] = useState<Array<{ id: string; name: string }>>([]);
+  const [apps, setApps] = useState<AppChoice[]>([]);
+  const [recentApps, setRecentApps] = useState<AppChoice[]>([]);
   const [printFit, setPrintFit] = useState(true);
   const [printRotate, setPrintRotate] = useState(false);
   const [beauty, setBeauty] = useState({ scale: 1, backdrop: "#F2F2F7", padding: 32, radius: 12, shadow: true, frame: false, watermark: "" });
@@ -69,8 +70,13 @@ export function Editor() {
     | { mode: "draw"; x: number; y: number; object: AnnotationObject; points: { x: number; y: number }[]; moved: boolean }
     | { mode: "crop"; x: number; y: number; box: { x: number; y: number; w: number; h: number } | null }
     | { mode: "marquee"; x: number; y: number; base: string[] }
+    | { mode: "pan"; x: number; y: number }
     | null
   >(null);
+  const spaceRef = useRef(false);
+  const [spaceDown, setSpaceDown] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const beautyTimer = useRef(0);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const pending = useRef(Promise.resolve());
   const pictureRev = useRef(0);
@@ -232,8 +238,13 @@ export function Editor() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        spaceRef.current = true;
+        setSpaceDown(true);
+      }
       const next = KEYS[event.key.toLowerCase()];
-      if (next && !LATER.has(next) && !event.metaKey && !event.ctrlKey) setTool(next);
+      if (next && !LATER.has(next) && !event.metaKey && !event.ctrlKey && !event.altKey) setTool(next);
       if (event.key === "Escape") setTool("select");
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && !event.altKey) {
         event.preventDefault();
@@ -274,6 +285,10 @@ export function Editor() {
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        spaceRef.current = false;
+        setSpaceDown(false);
+      }
       if (!arrowing.current) return;
       if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
       arrowing.current = false;
@@ -330,6 +345,11 @@ export function Editor() {
     const current = docRef.current;
     if (!current) return;
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (event.button === 1 || spaceRef.current) {
+      drag.current = { mode: "pan", x: event.clientX, y: event.clientY };
+      setPanning(true);
+      return;
+    }
     const p = localPoint(event);
     if (textRef.current.open) {
       const hit = textRef.current.lines.findIndex((line) => p.x >= line.x && p.y >= line.y && p.x <= line.x + line.w && p.y <= line.y + line.h);
@@ -421,6 +441,15 @@ export function Editor() {
     const active = drag.current;
     const current = docRef.current;
     if (!active || !current) return;
+    if (active.mode === "pan") {
+      const dx = event.clientX - active.x;
+      const dy = event.clientY - active.y;
+      active.x = event.clientX;
+      active.y = event.clientY;
+      holdFit.current = false;
+      setPan((current) => ({ x: current.x + dx, y: current.y + dy }));
+      return;
+    }
     const p = localPoint(event);
     if (active.mode === "marquee") {
       const w = p.x - active.x;
@@ -474,10 +503,12 @@ export function Editor() {
   }
 
   function onUp() {
+    setPanning(false);
     const active = drag.current;
     drag.current = null;
     const current = docRef.current;
     if (!active || !current) return;
+    if (active.mode === "pan") return;
     if (active.mode === "marquee") {
       setMarquee(null);
       return;
@@ -692,7 +723,22 @@ export function Editor() {
     setPanel(next);
     if (next === "text") api.editorText().then(setTextLines).catch((err: Error) => setError(err.message));
     if (next === "secrets") api.editorSecrets().then(setFindings).catch((err: Error) => setError(err.message));
-    if (next === "open") api.apps().then(setApps).catch((err: Error) => setError(err.message));
+    if (next === "open") {
+      api.openInState().then((nextState) => {
+        setApps(nextState.apps);
+        setRecentApps(nextState.recent);
+      }).catch((err: Error) => setError(err.message));
+    }
+  }
+
+  useEffect(() => () => window.clearTimeout(beautyTimer.current), []);
+
+  function updateBeauty(next: typeof beauty) {
+    setBeauty(next);
+    window.clearTimeout(beautyTimer.current);
+    beautyTimer.current = window.setTimeout(() => {
+      api.beautify(next).then(applyRemote).catch((err: Error) => setError(err.message));
+    }, 90);
   }
 
   function copyLines(asCode: boolean) {
@@ -710,7 +756,7 @@ export function Editor() {
 
   return (
     <div className="editor">
-      <header className="ed-bar">
+      <header className="ed-bar" data-tauri-drag-region="deep">
         <div className="ed-title">
           <strong>Capture</strong>
           <span>{state?.dirty ? "Edited · not saved" : "Saved to History"}</span>
@@ -759,8 +805,18 @@ export function Editor() {
         </div>
       </header>
       <div className="stage">
-        <div className="canvas-wrap">
-          <canvas ref={canvasRef} style={{ cursor: tool === "select" ? "default" : "crosshair" }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onDoubleClick={(event) => {
+        <div className="canvas-wrap" onWheel={(event) => {
+          event.preventDefault();
+          if (event.ctrlKey || event.metaKey) {
+            holdFit.current = false;
+            const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
+            setZoom((z) => Math.min(8, Math.max(0.1, z * factor)));
+            return;
+          }
+          holdFit.current = false;
+          setPan((current) => ({ x: current.x - event.deltaX, y: current.y - event.deltaY }));
+        }}>
+          <canvas ref={canvasRef} style={{ cursor: panning ? "grabbing" : spaceDown ? "grab" : tool === "select" ? "default" : "crosshair" }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onDoubleClick={(event) => {
             if (!doc) return;
             const bounds = canvasRef.current!.getBoundingClientRect();
             const p = { x: (event.clientX - bounds.left - pan.x) / zoom, y: (event.clientY - bounds.top - pan.y) / zoom };
@@ -864,16 +920,16 @@ export function Editor() {
           </div>}
           {panel === "text" && <TextPanel lines={textLines} picked={pickedLine} onPick={setPickedLine} onCopy={(asCode) => copyLines(asCode)} />}
           {panel === "secrets" && <SecretsPanel findings={findings} onDismiss={(id) => api.dismissSecret(id).then(setFindings).catch((err: Error) => setError(err.message))} onRedact={() => api.redactSecrets().then(applyRemote).then(() => api.editorSecrets()).then((next) => { setFindings(next); flash("Redacted"); }).catch((err: Error) => setError(err.message))} />}
-          {panel === "beautify" && <BeautifyPanel value={beauty} sizeMax={sizeMax} setValue={setBeauty} onApply={() => api.beautify(beauty).then((next) => { applyRemote(next); flash("Applied"); }).catch((err: Error) => setError(err.message))} />}
+          {panel === "beautify" && <BeautifyPanel value={beauty} sizeMax={sizeMax} setValue={updateBeauty} />}
           {panel === "print" && <PrintPanel fit={printFit} rotate={printRotate} setFit={setPrintFit} setRotate={setPrintRotate} onPrint={() => api.printEditor(printFit, printRotate).then(() => flash("Opening print")).catch((err: Error) => setError(err.message))} />}
-          {panel === "open" && <OpenPanel apps={apps} onOpen={(id) => api.openInChoose(id, state?.captureId ?? null).then(() => flash("Opened")).catch((err: Error) => setError(err.message))} />}
+          {panel === "open" && <OpenPanel recent={recentApps} apps={apps} onOpen={(id) => api.openInChoose(id, state?.captureId ?? null).then(() => flash("Opened")).catch((err: Error) => setError(err.message))} />}
           {error && <p className="error">{error}</p>}
         </aside>
       </div>
-      <footer className="ed-status">
+      <footer className="ed-status" data-tauri-drag-region="deep">
         <span>{doc ? `${doc.width} × ${doc.height} px` : ""}</span>
         <span>{doc?.objects.length ?? 0} objects</span>
-        <span>{TOOL_LABEL[tool]} tool: {Object.entries(KEYS).find(([, value]) => value === tool)?.[0].toUpperCase() ?? ""} · Esc to select</span>
+        <span>{TOOL_LABEL[tool]} tool: {Object.entries(KEYS).find(([, value]) => value === tool)?.[0].toUpperCase() ?? ""} · Esc to select · Space drag to move</span>
         <span className="grow">{preset?.folder?.replace(/^\/Users\/[^/]+/, "~") ?? "Clipboard only"}</span>
       </footer>
       {toast && <div className="ed-toast" role="status">{toast}</div>}
@@ -899,9 +955,9 @@ function TextPanel({ lines, picked, onPick, onCopy }: { lines: TextLine[]; picke
     <div className="ed-block">
       <span className="ed-kicker">Text</span>
       {lines.length === 0 && <p>No text was found.</p>}
-      <div className="text-list">
+      <div className="pick-list">
         {lines.map((line, index) => (
-          <button key={`${line.x}-${line.y}-${index}`} type="button" className={index === picked ? "on" : ""} onClick={() => onPick(index)}>{line.text}</button>
+          <button key={`${line.x}-${line.y}-${index}`} type="button" className={index === picked ? "on" : ""} title={line.text} onClick={() => onPick(index)}>{line.text}</button>
         ))}
       </div>
       <div className="row">
@@ -929,7 +985,7 @@ function SecretsPanel({ findings, onDismiss, onRedact }: { findings: SecretFindi
   );
 }
 
-function BeautifyPanel({ value, sizeMax, setValue, onApply }: { value: { scale: number; backdrop: string; padding: number; radius: number; shadow: boolean; frame: boolean; watermark: string }; sizeMax: number; setValue: (next: typeof value) => void; onApply: () => void }) {
+function BeautifyPanel({ value, sizeMax, setValue }: { value: { scale: number; backdrop: string; padding: number; radius: number; shadow: boolean; frame: boolean; watermark: string }; sizeMax: number; setValue: (next: typeof value) => void }) {
   return (
     <div className="ed-block">
       <span className="ed-kicker">Beautify</span>
@@ -940,7 +996,6 @@ function BeautifyPanel({ value, sizeMax, setValue, onApply }: { value: { scale: 
       <label className="ed-check">Shadow <input type="checkbox" checked={value.shadow} onChange={(event) => setValue({ ...value, shadow: event.target.checked })} /></label>
       <label className="ed-check">Frame <input type="checkbox" checked={value.frame} onChange={(event) => setValue({ ...value, frame: event.target.checked })} /></label>
       <div className="ed-line"><label htmlFor="beauty-mark">Watermark</label><input id="beauty-mark" value={value.watermark} onChange={(event) => setValue({ ...value, watermark: event.target.value })} /></div>
-      <button type="button" onClick={onApply}>Apply</button>
     </div>
   );
 }
@@ -956,12 +1011,21 @@ function PrintPanel({ fit, rotate, setFit, setRotate, onPrint }: { fit: boolean;
   );
 }
 
-function OpenPanel({ apps, onOpen }: { apps: Array<{ id: string; name: string }>; onOpen: (id: string) => void }) {
+function OpenPanel({ recent, apps, onOpen }: { recent: AppChoice[]; apps: AppChoice[]; onOpen: (id: string) => void }) {
+  const recentIds = new Set(recent.map((app) => app.id));
+  const rest = apps.filter((app) => !recentIds.has(app.id));
   return (
     <div className="ed-block">
       <span className="ed-kicker">Open in</span>
-      <div className="text-list">
-        {apps.map((app) => <button key={app.id} type="button" onClick={() => onOpen(app.id)}>{app.name}</button>)}
+      {recent.length > 0 && <span className="pick-label">Recent</span>}
+      {recent.length > 0 && (
+        <div className="pick-list">
+          {recent.map((app) => <button key={app.id} type="button" title={app.name} onClick={() => onOpen(app.id)}>{app.name}</button>)}
+        </div>
+      )}
+      {rest.length > 0 && recent.length > 0 && <span className="pick-label">Installed</span>}
+      <div className="pick-list">
+        {rest.map((app) => <button key={app.id} type="button" title={app.name} onClick={() => onOpen(app.id)}>{app.name}</button>)}
       </div>
     </div>
   );

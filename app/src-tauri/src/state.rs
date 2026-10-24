@@ -176,6 +176,9 @@ pub struct EditorSession {
     pub pixels_future: Vec<Option<Vec<u8>>>,
     /// Decoded capture. Cleared when a crop replaces the file.
     pub image: Option<image::RgbaImage>,
+    /// Flattened pixels from before the current Beautify pass. Further slider
+    /// moves render from this, so padding and shadow do not stack.
+    pub beautify_base: Option<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -200,6 +203,10 @@ pub struct AppState {
     pub hud: Mutex<Option<HudPayload>>,
     pub capture_mode: Mutex<String>,
     pub open_in_id: Mutex<Option<String>>,
+    /// True while Settings is listening for a new shortcut.
+    pub shortcuts_held: Mutex<bool>,
+    /// Preset to save with when a preset shortcut started this capture.
+    pub capture_preset: Mutex<Option<String>>,
 }
 
 pub fn app_root() -> PathBuf {

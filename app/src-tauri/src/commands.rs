@@ -45,13 +45,19 @@ pub fn settings_set(app: AppHandle, state: State<AppState>, settings: crate::sta
 }
 
 #[tauri::command]
-pub fn shortcuts_suspend(app: AppHandle) -> Result<(), String> {
-    app.global_shortcut().unregister_all().map_err(err_string)
+pub fn shortcuts_suspend(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    *state.shortcuts_held.lock().map_err(err_string)? = true;
+    app.global_shortcut().unregister_all().map_err(err_string)?;
+    // Menu key equivalents still fire while Settings is focused, so a press
+    // would start a capture instead of being recorded.
+    crate::rebuild_tray(&app).map_err(err_string)
 }
 
 #[tauri::command]
-pub fn shortcuts_reload(app: AppHandle) -> Result<(), String> {
-    crate::register_shortcuts(&app)
+pub fn shortcuts_reload(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    *state.shortcuts_held.lock().map_err(err_string)? = false;
+    crate::register_shortcuts(&app)?;
+    crate::rebuild_tray(&app).map_err(err_string)
 }
 
 #[tauri::command]
@@ -60,23 +66,35 @@ pub fn presets_list(state: State<AppState>) -> Result<Vec<Preset>, String> {
 }
 
 #[tauri::command]
-pub fn presets_save(state: State<AppState>, preset: Preset) -> Result<Vec<Preset>, String> {
-    let mut presets = state.presets.lock().map_err(err_string)?;
-    if let Some(existing) = presets.iter_mut().find(|item| item.id == preset.id) {
-        *existing = preset;
-    } else {
-        presets.push(preset);
+pub fn presets_save(app: AppHandle, state: State<AppState>, preset: Preset) -> Result<Vec<Preset>, String> {
+    let saved = {
+        let mut presets = state.presets.lock().map_err(err_string)?;
+        if let Some(existing) = presets.iter_mut().find(|item| item.id == preset.id) {
+            *existing = preset;
+        } else {
+            presets.push(preset);
+        }
+        save_presets(&state.root, &presets)?;
+        presets.clone()
+    };
+    let held = state.shortcuts_held.lock().map_err(err_string)?;
+    if !*held {
+        drop(held);
+        let _ = crate::register_shortcuts(&app);
     }
-    save_presets(&state.root, &presets)?;
-    Ok(presets.clone())
+    Ok(saved)
 }
 
 #[tauri::command]
-pub fn presets_delete(state: State<AppState>, id: String) -> Result<Vec<Preset>, String> {
-    let mut presets = state.presets.lock().map_err(err_string)?;
-    presets.retain(|preset| preset.id != id || preset.builtin);
-    save_presets(&state.root, &presets)?;
-    Ok(presets.clone())
+pub fn presets_delete(app: AppHandle, state: State<AppState>, id: String) -> Result<Vec<Preset>, String> {
+    let saved = {
+        let mut presets = state.presets.lock().map_err(err_string)?;
+        presets.retain(|preset| preset.id != id || preset.builtin);
+        save_presets(&state.root, &presets)?;
+        presets.clone()
+    };
+    let _ = crate::register_shortcuts(&app);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -206,7 +224,10 @@ pub fn relaunch(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn capture_cancel(app: AppHandle) -> Result<(), String> {
+pub fn capture_cancel(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    if let Ok(mut preset) = state.capture_preset.lock() {
+        *preset = None;
+    }
     hide_on_main(&app, "overlay-")
 }
 
@@ -239,7 +260,7 @@ pub fn capture_confirm(
     hide_on_main(&app, "overlay-")?;
     let scale = display_scale(&state, display_id);
     let image = if mode == "scroll" {
-        crate::features::scroll_capture(&state, display_id, x, y, width, height, image)?
+        crate::features::scroll_capture(&app, &state, display_id, x, y, width, height, image)?
     } else {
         image
     };
@@ -350,6 +371,7 @@ pub fn editor_open(app: AppHandle, state: State<AppState>, id: String) -> Result
             pixels_past: Vec::new(),
             pixels_future: Vec::new(),
             image: None,
+            beautify_base: None,
         });
     }
     // Close the wheel first, then open the editor on a later turn. Creating
@@ -480,6 +502,9 @@ pub fn editor_commit(window: WebviewWindow, app: AppHandle, state: State<AppStat
             return Err("No capture is open.".into());
         };
         let changed = record_edit(session, document, None);
+        if changed {
+            session.beautify_base = None;
+        }
         (
             session.capture_id.clone(),
             session.image_path.clone(),
@@ -506,6 +531,7 @@ pub fn editor_undo(window: WebviewWindow, app: AppHandle, state: State<AppState>
         }
         session.stack.undo();
         let pixels_changed = swap_pixels(session, true)?;
+        session.beautify_base = None;
         session.dirty = true;
         (
             session.capture_id.clone(),
@@ -530,6 +556,7 @@ pub fn editor_redo(window: WebviewWindow, app: AppHandle, state: State<AppState>
         }
         session.stack.redo();
         let pixels_changed = swap_pixels(session, false)?;
+        session.beautify_base = None;
         session.dirty = true;
         (
             session.capture_id.clone(),
@@ -568,6 +595,7 @@ pub fn editor_crop(window: WebviewWindow, app: AppHandle, state: State<AppState>
     let mut document = session.stack.current().clone();
     shotsmith_core::crop_document(&mut document, x as f32, y as f32, cropped.width() as f32, cropped.height() as f32);
     record_edit(session, document, Some(before));
+    session.beautify_base = None;
     session.image = Some(cropped);
     let capture_id = session.capture_id.clone();
     let image_path = session.image_path.clone();
@@ -1093,10 +1121,18 @@ fn store_and_route(
         }
     }
     let settings = state.settings.lock().map_err(err_string)?.clone();
+    let forced_preset = state.capture_preset.lock().map_err(err_string)?.take();
     let flat = shotsmith_render::render(&image, &document, &[]);
     let _ = shotsmith_extensions::install_builtin();
     if mode == "text" {
         crate::features::deliver_text(app, state, &id, &image, &original_path)?;
+        crate::rebuild_tray(app).map_err(err_string)?;
+        return Ok(id);
+    }
+    if let Some(preset_id) = forced_preset {
+        let preset = preset_by_id(state, Some(preset_id))?;
+        let saved = export_with_preset(state, &flat, &preset, scale, true)?;
+        show_hud(app, state, &format!("Saved with {}", preset.name), &saved.to_string_lossy(), &id, &original_path.to_string_lossy())?;
         crate::rebuild_tray(app).map_err(err_string)?;
         return Ok(id);
     }
@@ -1438,6 +1474,7 @@ mod pixel_history {
             pixels_past: Vec::new(),
             pixels_future: Vec::new(),
             image: None,
+            beautify_base: None,
         };
         let before = std::fs::read(&session.image_path).unwrap();
         let decoded = image::load_from_memory(&before).unwrap().to_rgba8();

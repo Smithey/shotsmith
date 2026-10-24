@@ -84,6 +84,7 @@ pub(crate) fn block_secrets(state: &State<AppState>, id: &str) -> Result<(), Str
 }
 
 pub(crate) fn scroll_capture(
+    app: &AppHandle,
     state: &State<AppState>,
     display_id: u32,
     x: u32,
@@ -99,10 +100,16 @@ pub(crate) fn scroll_capture(
     };
     let gx = origin_x + ((x as f32 + width as f32 / 2.0) / scale) as i32;
     let gy = origin_y + ((y as f32 + height as f32 / 2.0) / scale) as i32;
+    // The overlay has just been hidden. Wait until it is gone, then hand
+    // focus to the window underneath so the scroll is not eaten by Shotsmith.
+    std::thread::sleep(Duration::from_millis(140));
+    focus_app_at(app, gx, gy);
+    std::thread::sleep(Duration::from_millis(80));
+    let distance = ((height as f32) * 0.7 / scale).round().max(80.0) as i32;
     let mut pages = vec![first];
-    for _ in 0..8 {
-        shotsmith_platform::scroll_at(gx, gy, -((height as i32) * 2 / 3).max(80)).map_err(err_string)?;
-        std::thread::sleep(Duration::from_millis(280));
+    for _ in 0..12 {
+        scroll_page(gx, gy, distance)?;
+        std::thread::sleep(Duration::from_millis(240));
         let next = live_crop(display_id, x, y, width, height)?;
         if shotsmith_capture::pages_same(pages.last().expect("page"), &next) {
             break;
@@ -110,6 +117,53 @@ pub(crate) fn scroll_capture(
         pages.push(next);
     }
     Ok(shotsmith_capture::stitch_vertical(&pages))
+}
+
+fn scroll_page(x: i32, y: i32, distance: i32) -> Result<(), String> {
+    let piece = -((distance / 4).max(24));
+    for _ in 0..4 {
+        shotsmith_platform::scroll_at(x, y, piece).map_err(err_string)?;
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    Ok(())
+}
+
+fn focus_app_at(app: &AppHandle, x: i32, y: i32) {
+    let Some(pid) = shotsmith_platform::app_pid_at(x, y) else {
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    if app
+        .run_on_main_thread(move || {
+            activate_pid(pid);
+            let _ = tx.send(());
+        })
+        .is_err()
+    {
+        return;
+    }
+    let _ = rx.recv_timeout(Duration::from_millis(400));
+}
+
+fn activate_pid(pid: i32) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(target) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        app.yieldActivationToApplication(&target);
+        let _ = target.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+    }
 }
 
 fn live_crop(display_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<RgbaImage, String> {
@@ -237,9 +291,17 @@ pub fn editor_beautify(window: WebviewWindow, app: AppHandle, state: State<AppSt
         let mut editors = state.editors.lock().map_err(err_string)?;
         let session = editors.get_mut(&id).ok_or("No capture is open.")?;
         let before = std::fs::read(&session.image_path).map_err(err_string)?;
-        let flat = commands::flattened(session)?;
+        let first = session.beautify_base.is_none();
+        let source = if let Some(bytes) = session.beautify_base.clone() {
+            image::load_from_memory(&bytes).map_err(err_string)?.to_rgba8()
+        } else {
+            let flat = commands::flattened(session)?;
+            let encoded = shotsmith_output::encode(&flat, ImageFormat::Png, 1.0).map_err(err_string)?;
+            session.beautify_base = Some(encoded);
+            flat
+        };
         let pretty = shotsmith_render::beautify(
-            &flat,
+            &source,
             &BeautifyOptions {
                 scale: options.scale,
                 backdrop: options.backdrop,
@@ -253,7 +315,13 @@ pub fn editor_beautify(window: WebviewWindow, app: AppHandle, state: State<AppSt
         let png = shotsmith_output::encode(&pretty, ImageFormat::Png, 1.0).map_err(err_string)?;
         shotsmith_output::write_atomic(Path::new(&session.image_path), &png).map_err(err_string)?;
         session.image = Some(pretty.clone());
-        commands::record_edit(session, Document::new(pretty.width(), pretty.height()), Some(before));
+        let document = Document::new(pretty.width(), pretty.height());
+        if first {
+            commands::record_edit(session, document, Some(before));
+        } else {
+            session.stack.set_current(document);
+            session.dirty = true;
+        }
         let response = commands::with_pixels(session, true);
         let image_path = session.image_path.clone();
         drop(editors);

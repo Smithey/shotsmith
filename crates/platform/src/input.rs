@@ -12,17 +12,46 @@ pub struct AppChoice {
     pub name: String,
 }
 
+/// Process id of the frontmost non-Shotsmith window under a point, in the
+/// same top-left display coordinates `scroll_at` uses.
+pub fn app_pid_at(x: i32, y: i32) -> Option<i32> {
+    let windows = xcap::Window::all().ok()?;
+    for window in windows {
+        let name = window.app_name().unwrap_or_default().to_lowercase();
+        if name.contains("shotsmith") || name.is_empty() {
+            continue;
+        }
+        let (Ok(wx), Ok(wy), Ok(ww), Ok(wh)) = (window.x(), window.y(), window.width(), window.height()) else {
+            continue;
+        };
+        if ww < 40 || wh < 40 {
+            continue;
+        }
+        if x >= wx && y >= wy && x < wx + ww as i32 && y < wy + wh as i32 {
+            return window.pid().ok().map(|pid| pid as i32);
+        }
+    }
+    None
+}
+
 pub fn scroll_at(x: i32, y: i32, pixels: i32) -> PlatformResult<()> {
     #[cfg(target_os = "macos")]
     {
         unsafe {
-            CGWarpMouseCursorPosition(CGPoint { x: x as f64, y: y as f64 });
-            let event = CGEventCreateScrollWheelEvent(std::ptr::null_mut(), 0, 1, pixels);
-            if event.is_null() {
-                return Err(PlatformError::Message("Could not scroll.".into()));
+            let point = CGPoint { x: x as f64, y: y as f64 };
+            CGWarpMouseCursorPosition(point);
+            // A warp does not update which view is under the pointer, so the
+            // scroll would land on whatever was hovered before the capture.
+            let moved = CGEventCreateMouseEvent(std::ptr::null_mut(), 5, point, 0);
+            if !moved.is_null() {
+                CGEventPost(0, moved);
+                CFRelease(moved as *const std::ffi::c_void);
             }
-            CGEventPost(0, event);
-            CFRelease(event as *const std::ffi::c_void);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Pixel scrolls are dropped unless they look like a trackpad
+            // gesture: continuous, with a began phase and then an ended phase.
+            post_scroll(point, pixels, 1)?;
+            post_scroll(point, 0, 4)?;
         }
         return Ok(());
     }
@@ -30,8 +59,10 @@ pub fn scroll_at(x: i32, y: i32, pixels: i32) -> PlatformResult<()> {
     {
         unsafe {
             SetCursorPos(x, y);
-            let notches = (pixels / 40).clamp(-12, 12);
-            mouse_event(0x0800, 0, 0, notches as u32, 0);
+            // mouse_event wheel data is in WHEEL_DELTA (120) units.
+            let notches = (pixels / 40).clamp(-8, 8);
+            let delta = notches.saturating_mul(120);
+            mouse_event(0x0800, 0, 0, delta as u32, 0);
         }
         return Ok(());
     }
@@ -285,7 +316,27 @@ fn element_bounds_windows(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)
 }
 
 #[cfg(target_os = "macos")]
+fn post_scroll(point: CGPoint, delta: i32, phase: i64) -> PlatformResult<()> {
+    unsafe {
+        let event = CGEventCreateScrollWheelEvent(std::ptr::null_mut(), 0, 1, delta);
+        if event.is_null() {
+            return Err(PlatformError::Message("Could not scroll.".into()));
+        }
+        CGEventSetIntegerValueField(event, 88, 1);
+        CGEventSetIntegerValueField(event, 96, delta as i64);
+        CGEventSetIntegerValueField(event, 93, (delta as i64) << 16);
+        CGEventSetIntegerValueField(event, 99, phase);
+        CGEventSetIntegerValueField(event, 123, 0);
+        CGEventSetLocation(event, point);
+        CGEventPost(0, event);
+        CFRelease(event as *const std::ffi::c_void);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct CGPoint {
     x: f64,
     y: f64,
@@ -309,7 +360,10 @@ struct CGRect {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
+    fn CGEventCreateMouseEvent(source: *mut std::ffi::c_void, kind: u32, point: CGPoint, button: u32) -> *mut std::ffi::c_void;
     fn CGEventCreateScrollWheelEvent(source: *mut std::ffi::c_void, units: u32, wheel_count: u32, wheel1: i32) -> *mut std::ffi::c_void;
+    fn CGEventSetIntegerValueField(event: *mut std::ffi::c_void, field: u32, value: i64);
+    fn CGEventSetLocation(event: *mut std::ffi::c_void, point: CGPoint);
     fn CGEventPost(tap: u32, event: *mut std::ffi::c_void);
 }
 

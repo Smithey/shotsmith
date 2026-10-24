@@ -113,11 +113,11 @@ export function Settings() {
 
   function saveSettings(next: SettingsModel) {
     setSettings(next);
-    api.saveSettings(next).catch((err: Error) => setError(err.message));
+    return api.saveSettings(next).catch((err: Error) => setError(err.message));
   }
 
   function savePreset(next: Preset) {
-    api.savePreset(next).then(setPresets).catch((err: Error) => setError(err.message));
+    return api.savePreset(next).then(setPresets).catch((err: Error) => setError(err.message));
   }
 
   if (!settings || !preset) return <p className="set-loading">{error || "Loading settings…"}</p>;
@@ -578,13 +578,45 @@ function subtitle(item: Preset): string {
 function ShortcutField({ value, taken, onChange, onError }: {
   value: string;
   taken: (next: string) => string | null;
-  onChange: (next: string) => void;
+  onChange: (next: string) => void | Promise<unknown>;
   onError: (message: string) => void;
 }) {
   const [recording, setRecording] = useState(false);
-  const [ready, setReady] = useState(false);
   const recordingRef = useRef(false);
+  const readyRef = useRef(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const disarmRef = useRef<() => void>(() => {});
+  const commitRef = useRef<(next: string) => void>(() => {});
   const mac = isMac();
+
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!recordingRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        disarmRef.current();
+        return;
+      }
+      if (!readyRef.current) return;
+      if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        commitRef.current("");
+        return;
+      }
+      const next = fromKeyEvent(event);
+      if (next) commitRef.current(next);
+    };
+    const onPointer = (event: PointerEvent) => {
+      if (!buttonRef.current?.contains(event.target as Node)) disarm();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, [recording]);
 
   useEffect(() => {
     return () => {
@@ -597,21 +629,29 @@ function ShortcutField({ value, taken, onChange, onError }: {
 
   function arm() {
     recordingRef.current = true;
+    readyRef.current = false;
     setRecording(true);
-    setReady(false);
     void api.holdShortcuts().then(() => {
-      if (recordingRef.current) setReady(true);
-    }).catch((err: Error) => onError(err.message));
+      if (!recordingRef.current) return;
+      readyRef.current = true;
+      buttonRef.current?.focus();
+    }).catch((err: Error) => {
+      recordingRef.current = false;
+      readyRef.current = false;
+      setRecording(false);
+      onError(err.message);
+    });
   }
 
   function disarm() {
+    if (!recordingRef.current) return;
     recordingRef.current = false;
+    readyRef.current = false;
     setRecording(false);
-    setReady(false);
     void api.releaseShortcuts().catch((err: Error) => onError(err.message));
   }
 
-  function commit(next: string) {
+  async function commit(next: string) {
     const message = taken(next);
     if (message) {
       onError(message);
@@ -619,34 +659,21 @@ function ShortcutField({ value, taken, onChange, onError }: {
     }
     onError("");
     recordingRef.current = false;
+    readyRef.current = false;
     setRecording(false);
-    setReady(false);
-    onChange(next);
-    void api.releaseShortcuts().catch((err: Error) => onError(err.message));
+    await onChange(next);
+    await api.releaseShortcuts().catch((err: Error) => onError(err.message));
   }
+
+  disarmRef.current = disarm;
+  commitRef.current = commit;
 
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={recording ? "key-edit on" : "key-edit"}
       onClick={() => { if (!recording) arm(); }}
-      onBlur={() => { if (recordingRef.current) disarm(); }}
-      onKeyDown={(event) => {
-        if (!recording) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (event.key === "Escape") {
-          disarm();
-          return;
-        }
-        if (!ready) return;
-        if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
-          commit("");
-          return;
-        }
-        const next = fromKeyEvent(event.nativeEvent);
-        if (next) commit(next);
-      }}
     >
       {recording ? "Press shortcut" : <Keycaps raw={value} mac={mac} />}
     </button>

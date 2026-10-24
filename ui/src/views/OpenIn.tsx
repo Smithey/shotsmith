@@ -17,17 +17,21 @@ export function OpenIn() {
     api.openInChoose(id, null).catch((err: Error) => setError(err.message));
   }
 
+  const recentIds = new Set(recent.map((app) => app.id));
+  const rest = apps.filter((app) => !recentIds.has(app.id));
+
   return (
-    <div className="pane sheet">
-      <h1>Open in</h1>
-      {recent.length > 0 && <h2>Recent</h2>}
-      <div className="action-list">
-        {recent.map((app) => <button key={app.id} type="button" onClick={() => choose(app.id)}>{app.name}</button>)}
-      </div>
-      <h2>Installed</h2>
-      <div className="action-list">
-        {apps.map((app) => <button key={app.id} type="button" onClick={() => choose(app.id)}>{app.name}</button>)}
-      </div>
+    <div className="open-in">
+      {recent.length > 0 && <div className="menu-label">Recent</div>}
+      {recent.map((app) => (
+        <button key={app.id} type="button" className="menu-row" onClick={() => choose(app.id)}>{app.name}</button>
+      ))}
+      {recent.length > 0 && rest.length > 0 && <div className="menu-rule" />}
+      <div className="menu-label">Installed</div>
+      {rest.map((app) => (
+        <button key={app.id} type="button" className="menu-row" onClick={() => choose(app.id)}>{app.name}</button>
+      ))}
+      {rest.length === 0 && recent.length === 0 && <p className="recent-empty">No apps found.</p>}
       {error && <p className="error">{error}</p>}
     </div>
   );

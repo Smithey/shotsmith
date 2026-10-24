@@ -59,6 +59,8 @@ pub fn run() {
             hud: Mutex::new(None),
             capture_mode: Mutex::new("region".into()),
             open_in_id: Mutex::new(None),
+            shortcuts_held: Mutex::new(false),
+            capture_preset: Mutex::new(None),
         })
         .setup(|app| {
             if let Some(dir) = app.path().app_data_dir().ok() {
@@ -170,17 +172,28 @@ pub fn run() {
 pub fn register_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().map_err(|err| err.to_string())?.clone();
+    let presets = state.presets.lock().map_err(|err| err.to_string())?.clone();
+    let held = *state.shortcuts_held.lock().map_err(|err| err.to_string())?;
     drop(state);
+    if held {
+        return Ok(());
+    }
     let shortcut = app.global_shortcut();
     shortcut.unregister_all().map_err(|err| err.to_string())?;
     let mut errors = Vec::new();
-    for raw in [
+    let mut raws = vec![
         settings.shortcuts.region,
         settings.shortcuts.repeat_last,
         settings.shortcuts.window,
         settings.shortcuts.full_screen,
         settings.shortcuts.history,
-    ] {
+    ];
+    for preset in presets {
+        if let Some(value) = preset.shortcut {
+            raws.push(value);
+        }
+    }
+    for raw in raws {
         let Some(parsed) = parse_shortcut(&raw) else {
             if !raw.trim().is_empty() {
                 errors.push(format!("Could not read {raw}"));
@@ -200,8 +213,19 @@ pub fn register_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
 
 fn handle_shortcut(app: &tauri::AppHandle, shortcut: &Shortcut) -> Result<(), String> {
     let state = app.state::<AppState>();
+    if *state.shortcuts_held.lock().map_err(|err| err.to_string())? {
+        return Ok(());
+    }
     let settings = state.settings.lock().map_err(|err| err.to_string())?.clone();
+    let presets = state.presets.lock().map_err(|err| err.to_string())?.clone();
     drop(state);
+    if let Some(preset) = presets.into_iter().find(|preset| preset.shortcut.as_deref().is_some_and(|raw| same_shortcut(shortcut, raw))) {
+        let state = app.state::<AppState>();
+        *state.capture_preset.lock().map_err(|err| err.to_string())? = Some(preset.id);
+        drop(state);
+        let state = app.state::<AppState>();
+        return commands::capture_begin(app.clone(), state, "region".into());
+    }
     let mode = if same_shortcut(shortcut, &settings.shortcuts.region) {
         "region"
     } else if same_shortcut(shortcut, &settings.shortcuts.repeat_last) {
@@ -341,11 +365,13 @@ fn build_menu_bar(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 fn append_capture(menu: &impl AppendMenu, app: &tauri::AppHandle, include_app_commands: bool) -> tauri::Result<()> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().ok();
-    let region_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.region)).unwrap_or_default();
-    let repeat_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.repeat_last)).unwrap_or_default();
-    let window_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.window)).unwrap_or_default();
-    let screen_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.full_screen)).unwrap_or_default();
-    let history_accel = settings.as_ref().map(|item| accelerator(&item.shortcuts.history)).unwrap_or_default();
+    let held = state.shortcuts_held.lock().ok().map(|guard| *guard).unwrap_or(false);
+    let accel = |raw: &str| if held { String::new() } else { accelerator(raw) };
+    let region_accel = settings.as_ref().map(|item| accel(&item.shortcuts.region)).unwrap_or_default();
+    let repeat_accel = settings.as_ref().map(|item| accel(&item.shortcuts.repeat_last)).unwrap_or_default();
+    let window_accel = settings.as_ref().map(|item| accel(&item.shortcuts.window)).unwrap_or_default();
+    let screen_accel = settings.as_ref().map(|item| accel(&item.shortcuts.full_screen)).unwrap_or_default();
+    let history_accel = settings.as_ref().map(|item| accel(&item.shortcuts.history)).unwrap_or_default();
     let region = action(app, "capture-region", "Region", some_accel(&region_accel))?;
     let repeat = action(app, "capture-repeat", "Repeat last region", some_accel(&repeat_accel))?;
     let window = action(app, "capture-window", "Window", some_accel(&window_accel))?;
