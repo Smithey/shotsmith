@@ -22,20 +22,6 @@ This repository is the whole free app, under the MIT licence. Nothing in it is a
 
 Releases also include a Windows 11 64-bit installer. That build is not Authenticode signed yet, so Windows SmartScreen may warn until you confirm the checksum below.
 
-## A note from me
-
-Yes, I did vibe code this, and I am by no means a software engineer. If you think you can do it better, then go ahead. I am not stopping you. If you want to contribute, feel free, but unless you understand the output and test it, don't be a meat proxy ([dontbeameatproxy.com](https://dontbeameatproxy.com)).
-
-I built this for my own use because I really loved Greenshot in my Windows days. I am not a fan of the Mac app, and the built-in Mac screenshot tool was annoying to use. My uncle asked for a free Snagit alternative.
-
-I did get inspiration for the action wheel from [Filee](https://github.com/KnifeLemon/Filee). I am sure their designers think I butchered the look, but props to them for the awesome app.
-
-I benefit from open source software, directly and indirectly, every day, so I wanted to do the same. It was a tough decision to go with open-core, but I was satisfied because everything I would have wanted, plus more, is free forever. The paid version, which is dirt cheap, is basically like 2% of obscure features that really are more for people who want to go out of their way to support me to keep improving this. I am just happy if one other person benefits from it.
-
-My job (Senior Technical Support Engineer) has, for 10+ years, required me to take, mark up, and send screenshots to thousands or tens of thousands of people, and it has always taken more time than it should have.
-
-I have never written a line of code in Rust in my life. I hear it is fast. I don't know. I am not a software engineer.
-
 ## In this version
 
 <img src="docs/assets/history.png" width="720" alt="History, with recent captures and search">
@@ -145,6 +131,20 @@ Bug reports, translations, docs, and code all fit. Read [CONTRIBUTING.md](CONTRI
 cargo test --workspace
 pnpm typecheck
 ```
+
+## A note from me
+
+Yes, I did vibe code this, and I am by no means a software engineer. If you think you can do it better, then go ahead. I am not stopping you. If you want to contribute, feel free, but unless you understand the output and test it, don't be a meat proxy ([dontbeameatproxy.com](https://dontbeameatproxy.com)).
+
+I built this for my own use because I really loved Greenshot in my Windows days. I am not a fan of the Mac app, and the built-in Mac screenshot tool was annoying to use. My uncle asked for a free Snagit alternative.
+
+I did get inspiration for the action wheel from [Filee](https://github.com/KnifeLemon/Filee). I am sure their designers think I butchered the look, but props to them for the awesome app.
+
+I benefit from open source software, directly and indirectly, every day, so I wanted to do the same. It was a tough decision to go with open-core, but I was satisfied because everything I would have wanted, plus more, is free forever. The paid version, which is dirt cheap, is basically like 2% of obscure features that really are more for people who want to go out of their way to support me to keep improving this. I am just happy if one other person benefits from it.
+
+My job (Senior Technical Support Engineer) has, for 10+ years, required me to take, mark up, and send screenshots to thousands or tens of thousands of people, and it has always taken more time than it should have.
+
+I have never written a line of code in Rust in my life. I hear it is fast. I don't know. I am not a software engineer.
 
 ## Licence
 
