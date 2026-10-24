@@ -31,6 +31,7 @@ pub fn reveal_documents(app: &AppHandle) {
 static MENU_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
 static MENU_SHOWN_AT: AtomicU64 = AtomicU64::new(0);
 static MENU_FOCUS_RETRY: AtomicBool = AtomicBool::new(false);
+static OVERLAY_UP: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -51,12 +52,17 @@ pub fn open_view(
     decorations: bool,
     transparent: bool,
 ) -> Result<(), String> {
+    let capture = label.starts_with("overlay-");
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.set_position(LogicalPosition::new(x, y));
         let _ = window.set_size(LogicalSize::new(width, height));
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        // The capture window is shown only after it is marked as unable to
+        // enter a fullscreen Space. Showing it here does that first.
+        if !capture {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
         let _ = app.emit("refresh", label);
         if is_document_window(label) {
             apply_appearance(app);
@@ -64,7 +70,6 @@ pub fn open_view(
         }
         return Ok(());
     }
-    let capture = label.starts_with("overlay-");
     let chrome = is_document_window(label);
     let url = WebviewUrl::App(format!("index.html?view={view}").into());
     let builder = WebviewWindowBuilder::new(app, label, url)
@@ -94,7 +99,7 @@ pub fn open_view(
         )
         .resizable(decorations)
         .shadow(!transparent && !capture)
-        .visible(!chrome)
+        .visible(!chrome && !capture)
         .focused(label != "hud")
         .accept_first_mouse(capture || label == "donut" || label == "hud")
         .content_protected(capture);
@@ -295,7 +300,9 @@ fn apply_dock(app: &AppHandle) {
         .webview_windows()
         .into_iter()
         .any(|(label, window)| is_document_window(&label) && window.is_visible().unwrap_or(false));
-    let policy = if pinned || open {
+    // Accessory apps are omitted from Force Quit. A capture has to stay listed
+    // so a stuck overlay can be quit without restarting the Mac.
+    let policy = if pinned || open || OVERLAY_UP.load(Ordering::SeqCst) {
         tauri::ActivationPolicy::Regular
     } else {
         tauri::ActivationPolicy::Accessory
@@ -329,17 +336,21 @@ pub fn hide_labeled(app: &AppHandle, prefix: &str) {
     for (label, window) in app.webview_windows() {
         if label.starts_with(prefix) || label == prefix {
             if label.starts_with("overlay") {
-                // A hidden overlay can still sit above the page for a frame
-                // and swallow the scroll that starts a scrolling capture.
-                let _ = window.set_ignore_cursor_events(true);
+                // Hiding leaves the screen-sized window in front. Close it.
+                release_overlay(&window);
                 hid_overlay = true;
+                let _ = window.hide();
+                let _ = window.destroy();
+                continue;
             }
             let _ = window.hide();
         }
     }
     if hid_overlay {
+        OVERLAY_UP.store(false, Ordering::SeqCst);
         disarm_overlay_cancel();
         crate::set_tray_capturing(app, false);
+        sync_dock(app);
     }
 }
 
@@ -354,8 +365,20 @@ pub fn show_overlays(app: &AppHandle) -> Result<(), String> {
     if displays.is_empty() {
         return Ok(());
     }
+    // Accessory apps are missing from Force Quit. Set this before the shield
+    // exists, so a stuck capture can still be quit.
+    OVERLAY_UP.store(true, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    }
     for display in displays {
-        show_overlay(app, &display)?;
+        if let Err(err) = show_overlay(app, &display) {
+            hide_labeled(app, "overlay-");
+            OVERLAY_UP.store(false, Ordering::SeqCst);
+            sync_dock(app);
+            return Err(err);
+        }
     }
     arm_overlay_cancel(app);
     crate::set_tray_capturing(app, true);
@@ -385,6 +408,7 @@ fn show_overlay(app: &AppHandle, display: &DisplayPayload) -> Result<(), String>
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.set_content_protected(true);
         seat_overlay(&window, x, y, width, height);
+        let _ = window.show();
     }
     Ok(())
 }
@@ -414,17 +438,21 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
             CGPoint::new(x, primary_h - (y + height)),
             CGSize::new(width, height),
         );
+        // FullScreenAuxiliary lets a screen-sized window become its own Space.
+        // Closing that window leaves the Space up, so other apps open invisibly
+        // under it. FullScreenNone keeps the shield on the current Space.
+        ns.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenNone
+                | NSWindowCollectionBehavior::FullScreenDisallowsTiling
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
         ns.setFrame_display(frame, true);
         // Popup level covers the menu bar and stays under Force Quit.
         ns.setLevel(NSPopUpMenuWindowLevel);
         ns.setSharingType(NSWindowSharingType::None);
         ns.setHidesOnDeactivate(false);
-        ns.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::IgnoresCycle,
-        );
         ns.makeKeyAndOrderFront(None);
     }
     #[cfg(target_os = "windows")]
@@ -437,6 +465,40 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (window, x, y, width, height);
+    }
+}
+
+fn release_overlay(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSNormalWindowLevel, NSWindow, NSWindowStyleMask};
+        let Some(_main) = MainThreadMarker::new() else {
+            let _ = window.hide();
+            return;
+        };
+        let Ok(raw) = window.ns_window() else {
+            let _ = window.hide();
+            return;
+        };
+        let Some(ptr) = std::ptr::NonNull::new(raw as *mut NSWindow) else {
+            return;
+        };
+        let ns = unsafe { ptr.as_ref() };
+        let fullscreen = ns.styleMask().contains(NSWindowStyleMask::FullScreen);
+        if fullscreen {
+            ns.toggleFullScreen(None);
+        }
+        ns.setLevel(NSNormalWindowLevel);
+        ns.setIgnoresMouseEvents(true);
+        if !fullscreen {
+            ns.orderOut(None);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.hide();
     }
 }
 
