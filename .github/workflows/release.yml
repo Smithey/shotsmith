@@ -1,4 +1,5 @@
 # Pushing to main builds macOS and Windows installers and attaches them to GitHub Releases.
+# Publishing waits until the release environment is approved.
 # Every release also gets SHA256SUMS and a GitHub build attestation.
 
 name: Release
@@ -14,7 +15,16 @@ permissions:
   attestations: write
 
 jobs:
+  approve:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - run: echo "Publishing is approved."
+
   build:
+    needs: approve
     strategy:
       fail-fast: false
       matrix:
@@ -23,12 +33,12 @@ jobs:
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -61,7 +71,7 @@ jobs:
             echo "args=--target aarch64-apple-darwin" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -111,7 +121,7 @@ jobs:
           find release-installers -type f -print
           test -n "$(find release-installers -type f -print -quit)"
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: release-installers/*
 
@@ -121,7 +131,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Publish SHA256SUMS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

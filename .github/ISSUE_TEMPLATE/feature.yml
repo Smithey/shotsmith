@@ -1,0 +1,10 @@
+name: Feature
+description: A change you want in the free app.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: change
+    attributes:
+      label: What should change
+    validations:
+      required: true
