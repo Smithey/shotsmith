@@ -24,9 +24,14 @@ export function Donut() {
     let stop = () => {};
     onRefresh(load).then((un) => { stop = un; });
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        currentWindow().hide();
+        return;
+      }
+      // Command-Shift-2 is the region shortcut. The wheel is focused, so that
+      // key would otherwise run a slice and leave the next wheel dead.
       const current = stateRef.current;
-      if (event.key === "Escape") currentWindow().hide();
-      if (!current) return;
+      if (!current || event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === "Enter") act(current.slots[0]?.id ?? "copy", event.shiftKey);
       const index = Number(event.key) - 1;
       if (index >= 0 && index < current.slots.length) act(current.slots[index].id, event.shiftKey);
@@ -70,7 +75,13 @@ export function Donut() {
           flicked.current = true;
           act(state.slots[hover].id, event.shiftKey);
           setTimeout(() => { flicked.current = false; }, 0);
+          return;
         }
+        const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+        const cx = event.clientX - bounds.left - CENTER;
+        const cy = event.clientY - bounds.top - CENTER;
+        if (Math.hypot(cx, cy) < 50) return;
+        act(state.slots[hover].id, event.shiftKey);
       }}
     >
       <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE}>

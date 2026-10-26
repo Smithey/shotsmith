@@ -1247,6 +1247,22 @@ pub(crate) fn on_main_thread() -> bool {
     }
 }
 
+fn dismiss_donut_on_main(app: &AppHandle) -> Result<(), String> {
+    if on_main_thread() {
+        dismiss_donut(app);
+        return Ok(());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let queued = app.clone();
+    app.run_on_main_thread(move || {
+        dismiss_donut(&queued);
+        let _ = tx.send(());
+    })
+    .map_err(err_string)?;
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|_| "The wheel did not close.".to_string())
+}
+
 fn hide_on_main(app: &AppHandle, prefix: &str) -> Result<(), String> {
     if on_main_thread() {
         hide_labeled(app, prefix);
@@ -1295,6 +1311,8 @@ fn begin_overlay(app: &AppHandle, state: &State<AppState>, present: bool) -> Res
         hide_on_main(app, "status-menu")?;
     }
     hide_on_main(app, "overlay-")?;
+    // A wheel left up while the capture window opens stops taking clicks.
+    dismiss_donut_on_main(app)?;
     if menu_open && !on_main_thread() {
         std::thread::sleep(std::time::Duration::from_millis(120));
     }
@@ -1619,6 +1637,7 @@ fn store_and_route(
                 cursor_y: shotsmith_platform::cursor_position().1,
             });
             let queued = app.clone();
+            let wheel = format!("donut-{id}");
             let spoken = shotsmith_platform::screen_reader_active();
             app.run_on_main_thread(move || {
                 if spoken {
@@ -1635,7 +1654,7 @@ fn store_and_route(
                         false,
                     );
                 } else {
-                    let _ = place_near_cursor(&queued, "donut", "donut", 300.0);
+                    let _ = place_near_cursor(&queued, &wheel, "donut", 300.0);
                 }
             })
             .map_err(err_string)?;

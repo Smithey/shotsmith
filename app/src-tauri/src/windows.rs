@@ -88,23 +88,23 @@ pub fn open_view(
                 || label.starts_with("pin-")
                 || capture
                 || label == "hud"
-                || label == "donut",
+                || is_donut(label),
         )
         .skip_taskbar(
             transparent
                 || capture
                 || label == "hud"
-                || label == "donut"
+                || is_donut(label)
                 || label.starts_with("pin-"),
         )
         .resizable(decorations)
         .shadow(!transparent && !capture)
         .visible(!chrome && !capture)
         .focused(label != "hud")
-        .accept_first_mouse(capture || label == "donut" || label == "hud")
+        .accept_first_mouse(capture || is_donut(label) || label == "hud")
         .content_protected(capture);
     let window = builder.build().map_err(|err| err.to_string())?;
-    if transparent || label == "donut" || label == "hud" {
+    if transparent || is_donut(label) || label == "hud" {
         clear_round_window(&window);
     }
     if chrome {
@@ -310,15 +310,21 @@ fn apply_dock(app: &AppHandle) {
     let _ = app.set_activation_policy(policy);
 }
 
+fn is_donut(label: &str) -> bool {
+    label == "donut" || label.starts_with("donut-")
+}
+
 pub fn dismiss_donut(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut donut) = state.donut.lock() {
             *donut = None;
         }
     }
-    if let Some(window) = app.get_webview_window("donut") {
-        let _ = window.hide();
-        let _ = window.destroy();
+    for (label, window) in app.webview_windows() {
+        if is_donut(&label) {
+            let _ = window.hide();
+            let _ = window.destroy();
+        }
     }
 }
 
@@ -553,7 +559,9 @@ fn arm_overlay_cancel_mac(app: &AppHandle) {
             && event_ref
                 .modifierFlags()
                 .contains(NSEventModifierFlags::Command);
-        if code == 53 || command_period {
+        // Only while the capture shield is up. A monitor left installed
+        // eats Escape on the wheel after the next capture.
+        if OVERLAY_UP.load(Ordering::SeqCst) && (code == 53 || command_period) {
             let queued = app.clone();
             let _ = app.run_on_main_thread(move || cancel_overlays(&queued));
             std::ptr::null_mut()
@@ -614,12 +622,46 @@ pub fn place_near_cursor(
     let x = (cx as f64 - size / 2.0).clamp(min_x, max_x.max(min_x));
     let y = (cy as f64 - size / 2.0).clamp(min_y, max_y.max(min_y));
     open_view(app, label, view, "Shotsmith", x, y, size, size, false, true)?;
-    if label == "donut" {
+    if is_donut(label) {
+        // The shield's close deactivates the app. A new wheel is not key,
+        // so it still tracks the pointer but drops clicks and Escape.
+        disarm_overlay_cancel();
         if let Some(window) = app.get_webview_window(label) {
             clear_round_window(&window);
+            focus_wheel(&window);
+            let again = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let wheel = again.clone();
+                let _ = again.run_on_main_thread(move || focus_wheel(&wheel));
+            });
         }
     }
     Ok(())
+}
+
+fn focus_wheel(window: &tauri::WebviewWindow) {
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSWindow};
+        if let Some(main) = MainThreadMarker::new() {
+            if let Ok(raw) = window.ns_window() {
+                if let Some(ptr) = std::ptr::NonNull::new(raw as *mut NSWindow) {
+                    let ns = unsafe { ptr.as_ref() };
+                    ns.setIgnoresMouseEvents(false);
+                    ns.setHidesOnDeactivate(false);
+                    ns.makeKeyAndOrderFront(None);
+                    #[allow(deprecated)]
+                    NSApplication::sharedApplication(main).activateIgnoringOtherApps(true);
+                }
+            }
+        }
+    }
+    let _ = window.set_focus();
 }
 
 #[cfg(target_os = "windows")]
