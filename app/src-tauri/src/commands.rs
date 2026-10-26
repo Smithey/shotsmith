@@ -942,30 +942,27 @@ pub fn donut_act(
     let Some(payload) = payload else {
         return Err("The donut is not open.".into());
     };
-    // Window and clipboard calls have to run on the main thread. Doing them
-    // inside this command destroys the webview while it is still answering
-    // the click, which aborts the process.
-    app.clone()
-        .run_on_main_thread(move || {
-            let state = app.state::<AppState>();
-            if !keep_open {
-                if let Ok(mut donut) = state.donut.lock() {
-                    *donut = None;
-                }
-                hide_labeled(&app, "donut");
+    let queued = app.clone();
+    defer_to_main(&app, move || {
+        let state = queued.state::<AppState>();
+        if !keep_open {
+            if let Ok(mut donut) = state.donut.lock() {
+                *donut = None;
             }
-            if let Err(err) = run_action(&app, &state, &payload.capture_id, &action) {
-                let _ = show_hud(
-                    &app,
-                    &state,
-                    "Could not finish",
-                    &err,
-                    &payload.capture_id,
-                    &payload.image_path,
-                );
-            }
-        })
-        .map_err(err_string)
+            hide_labeled(&queued, "donut");
+        }
+        if let Err(err) = run_action(&queued, &state, &payload.capture_id, &action) {
+            let _ = show_hud(
+                &queued,
+                &state,
+                "Could not finish",
+                &err,
+                &payload.capture_id,
+                &payload.image_path,
+            );
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1236,6 +1233,12 @@ pub fn quit(app: AppHandle) {
     app.exit(0);
 }
 
+static MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+
+pub(crate) fn note_main_thread() {
+    let _ = MAIN_THREAD.set(std::thread::current().id());
+}
+
 pub(crate) fn on_main_thread() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -1243,8 +1246,22 @@ pub(crate) fn on_main_thread() -> bool {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        false
+        MAIN_THREAD
+            .get()
+            .is_some_and(|id| *id == std::thread::current().id())
     }
+}
+
+/// Run `task` on the UI thread after the current WebView2 callback returns.
+///
+/// Capture confirm and a wheel click are already on that thread. Doing the
+/// window work inline sticks the new view on the loading spinner, and the
+/// next click stops the process.
+fn defer_to_main(app: &AppHandle, task: impl FnOnce() + Send + 'static) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = app.run_on_main_thread(task);
+    });
 }
 
 fn dismiss_donut_on_main(app: &AppHandle) -> Result<(), String> {
@@ -1639,7 +1656,7 @@ fn store_and_route(
             let queued = app.clone();
             let wheel = format!("donut-{id}");
             let spoken = shotsmith_platform::screen_reader_active();
-            app.run_on_main_thread(move || {
+            defer_to_main(app, move || {
                 if spoken {
                     let _ = open_view(
                         &queued,
@@ -1656,8 +1673,7 @@ fn store_and_route(
                 } else {
                     let _ = place_near_cursor(&queued, &wheel, "donut", 300.0);
                 }
-            })
-            .map_err(err_string)?;
+            });
         }
     }
     crate::rebuild_tray(app).map_err(err_string)?;

@@ -72,7 +72,7 @@ pub fn open_view(
     }
     let chrome = is_document_window(label);
     let url = WebviewUrl::App(format!("index.html?view={view}").into());
-    let builder = WebviewWindowBuilder::new(app, label, url)
+    let mut builder = WebviewWindowBuilder::new(app, label, url)
         .title(title)
         .inner_size(width, height)
         .position(x, y)
@@ -99,10 +99,18 @@ pub fn open_view(
         )
         .resizable(decorations)
         .shadow(!transparent && !capture)
-        .visible(!chrome && !capture)
+        .visible(!chrome && !capture && !is_donut(label))
         .focused(label != "hud")
         .accept_first_mouse(capture || is_donut(label) || label == "hud")
         .content_protected(capture);
+    if is_donut(label) {
+        builder = builder.on_page_load(|window, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        });
+    }
     let window = builder.build().map_err(|err| err.to_string())?;
     if transparent || is_donut(label) || label == "hud" {
         clear_round_window(&window);
@@ -699,8 +707,8 @@ fn seat_tool_window(window: &tauri::WebviewWindow) {
 fn clear_round_window(window: &tauri::WebviewWindow) {
     let _ = window.set_shadow(false);
     let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
-    #[cfg(target_os = "windows")]
-    seat_tool_window(window);
+    // skip_taskbar is set before the webview exists. Changing the extended
+    // style afterwards leaves a transparent window on the loading spinner.
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;

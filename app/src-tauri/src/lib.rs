@@ -18,6 +18,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    commands::note_main_thread();
     let root = app_root();
     let _ = std::fs::create_dir_all(&root);
     let settings = load_settings(&root);
@@ -187,6 +188,8 @@ pub fn run() {
                     api.prevent_exit();
                 }
             }
+            // Dock click. Windows has no equivalent RunEvent variant.
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => windows::reveal_documents(app),
             _ => {}
         });
@@ -296,6 +299,54 @@ fn handle_shortcut(app: &tauri::AppHandle, shortcut: &Shortcut) -> Result<(), St
     Ok(())
 }
 
+fn tray_icon_image(bytes: &[u8]) -> tauri::Result<Image<'_>> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        Image::from_bytes(bytes)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let image = image::load_from_memory(bytes)?;
+        let mut rgba = image.to_rgba8();
+        if windows_taskbar_is_dark() {
+            for pixel in rgba.pixels_mut() {
+                if pixel[3] > 0 && pixel[0] < 48 && pixel[1] < 48 && pixel[2] < 48 {
+                    pixel[0] = 255;
+                    pixel[1] = 255;
+                    pixel[2] = 255;
+                }
+            }
+        }
+        let (width, height) = rgba.dimensions();
+        Ok(Image::new_owned(rgba.into_raw(), width, height))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_taskbar_is_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
+    };
+    let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+        .encode_utf16()
+        .collect();
+    let name: Vec<u16> = "SystemUsesLightTheme\0".encode_utf16().collect();
+    let mut theme: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            &mut theme as *mut u32 as *mut _,
+            &mut size,
+        )
+    };
+    status != 0 || theme == 0
+}
+
 pub fn set_tray_capturing(app: &tauri::AppHandle, active: bool) {
     let Some(tray) = app.tray_by_id("shotsmith") else {
         return;
@@ -305,7 +356,7 @@ pub fn set_tray_capturing(app: &tauri::AppHandle, active: bool) {
     } else {
         include_bytes!("../icons/trayTemplate.png")
     };
-    if let Ok(icon) = Image::from_bytes(bytes) {
+    if let Ok(icon) = tray_icon_image(bytes) {
         let _ = tray.set_icon(Some(icon));
         let _ = tray.set_icon_as_template(!active);
     }
@@ -327,11 +378,17 @@ pub fn rebuild_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     if app.tray_by_id("shotsmith").is_some() {
         return Ok(());
     }
-    let icon = Image::from_bytes(include_bytes!("../icons/trayTemplate.png"))?;
+    let icon = tray_icon_image(include_bytes!("../icons/trayTemplate.png"))?;
     let mut builder = TrayIconBuilder::with_id("shotsmith")
         .icon(icon)
-        .icon_as_template(true)
-        .tooltip("Shotsmith")
+        .tooltip("Shotsmith");
+    // Template mode is a macOS menu-bar feature. On Windows it does not recolor
+    // the glyph, and the black template disappears on a dark taskbar.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.icon_as_template(true);
+    }
+    builder = builder
         .on_menu_event(|app, event| {
             let _ = on_menu(app, event.id.as_ref());
         });
