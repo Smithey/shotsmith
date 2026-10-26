@@ -334,25 +334,40 @@ pub fn capture_confirm(
             height,
         });
     }
-    hide_on_main(&app, "overlay-")?;
-    let scale = display_scale(&state, display_id);
-    let image = if mode == "scroll" {
-        crate::features::scroll_capture(&app, &state, display_id, x, y, width, height, image)?
-    } else {
-        image
-    };
-    store_and_route(
-        &app,
-        &state,
-        image,
-        &mode,
-        source_app,
-        window_title,
-        include_cursor,
-        cursor_x,
-        cursor_y,
-        scale,
-    )
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let result = (|| {
+            // This command is the overlay's click. Hiding that window before
+            // the click returns blocks the UI thread for about 15 seconds,
+            // which is the pause before the wheel.
+            hide_on_main(&app, "overlay-")?;
+            let scale = display_scale(&state, display_id);
+            let image = if mode == "scroll" {
+                crate::features::scroll_capture(
+                    &app, &state, display_id, x, y, width, height, image,
+                )?
+            } else {
+                image
+            };
+            store_and_route(
+                &app,
+                &state,
+                image,
+                &mode,
+                source_app,
+                window_title,
+                include_cursor,
+                cursor_x,
+                cursor_y,
+                scale,
+            )
+        })();
+        if let Err(err) = &result {
+            report_capture_error(&app, err);
+        }
+    });
+    Ok(String::new())
 }
 
 #[tauri::command]
@@ -425,7 +440,10 @@ pub fn capture_countdown(app: AppHandle, state: State<AppState>) -> Result<(), S
         countdown: Some(settings.timed_seconds),
     };
     *state.hud.lock().map_err(err_string)? = Some(hud);
-    place_hud(&app)
+    defer_to_main(&app.clone(), move || {
+        let _ = place_hud(&app);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -507,17 +525,16 @@ pub fn editor_open(app: AppHandle, state: State<AppState>, id: String) -> Result
         });
     }
     // Close the wheel first, then open the editor on a later turn. Creating
-    // the editor window inside the wheel's click aborts WebKit and leaves
-    // the wheel on screen.
+    // the editor window inside the click aborts WebView and leaves the menu up.
     let queued = app.clone();
-    app.run_on_main_thread(move || {
+    defer_to_main(&app, move || {
         dismiss_donut(&queued);
         let open = queued.clone();
-        let _ = queued.run_on_main_thread(move || {
+        defer_to_main(&queued, move || {
             let _ = crate::windows::open_editor(&open, &id, &title);
         });
-    })
-    .map_err(err_string)
+    });
+    Ok(())
 }
 
 fn capture_title(record: &CaptureRecord) -> String {
@@ -974,18 +991,21 @@ pub fn pin_open(app: AppHandle, state: State<AppState>, id: String) -> Result<()
         .set_pinned(&id, true)
         .map_err(err_string)?;
     let (x, y) = shotsmith_platform::cursor_position();
-    open_view(
-        &app,
-        &format!("pin-{id}"),
-        &format!("pin&id={id}"),
-        "Pin",
-        x as f64,
-        y as f64,
-        360.0,
-        240.0,
-        false,
-        false,
-    )?;
+    let queued = app.clone();
+    defer_to_main(&app, move || {
+        let _ = open_view(
+            &queued,
+            &format!("pin-{id}"),
+            &format!("pin&id={id}"),
+            "Pin",
+            x as f64,
+            y as f64,
+            360.0,
+            240.0,
+            false,
+            false,
+        );
+    });
     crate::rebuild_tray(&app).map_err(err_string)
 }
 
@@ -1013,7 +1033,10 @@ pub fn reveal_capture(state: State<AppState>, id: String) -> Result<(), String> 
 
 #[tauri::command]
 pub fn open_history(app: AppHandle) -> Result<(), String> {
-    crate::windows::open_history(&app)
+    defer_to_main(&app.clone(), move || {
+        let _ = crate::windows::open_history(&app);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1057,7 +1080,10 @@ pub fn history_copy(app: AppHandle, state: State<AppState>, id: String) -> Resul
 
 #[tauri::command]
 pub fn open_settings(app: AppHandle) -> Result<(), String> {
-    crate::windows::open_settings(&app)
+    defer_to_main(&app.clone(), move || {
+        let _ = crate::windows::open_settings(&app);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1074,16 +1100,19 @@ pub fn finish_onboarding(
     app: AppHandle,
     state: State<AppState>,
     after_capture: String,
+    launch_at_login: bool,
 ) -> Result<(), String> {
     let mut settings = state.settings.lock().map_err(err_string)?.clone();
     settings.onboarding_done = true;
     settings.after_capture = after_capture;
+    settings.launch_at_login = launch_at_login;
     drop(state.settings.lock().map_err(err_string)?);
     {
         let mut current = state.settings.lock().map_err(err_string)?;
         *current = settings.clone();
     }
     save_settings(&state.root, &settings)?;
+    apply_autostart(&app, launch_at_login)?;
     if let Some(window) = app.get_webview_window("onboarding") {
         let _ = window.close();
     }
@@ -1654,7 +1683,6 @@ fn store_and_route(
                 cursor_y: shotsmith_platform::cursor_position().1,
             });
             let queued = app.clone();
-            let wheel = format!("donut-{id}");
             let spoken = shotsmith_platform::screen_reader_active();
             defer_to_main(app, move || {
                 if spoken {
@@ -1671,7 +1699,7 @@ fn store_and_route(
                         false,
                     );
                 } else {
-                    let _ = place_near_cursor(&queued, &wheel, "donut", 300.0);
+                    let _ = place_near_cursor(&queued, "donut", "donut", 300.0);
                 }
             });
         }

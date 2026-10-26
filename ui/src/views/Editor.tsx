@@ -723,7 +723,7 @@ export function Editor() {
     setPanel(next);
     if (next === "text") api.editorText().then(setTextLines).catch((err: Error) => setError(err.message));
     if (next === "secrets") api.editorSecrets().then(setFindings).catch((err: Error) => setError(err.message));
-    if (next === "open") {
+    if (next === "open" && isMac()) {
       api.openInState().then((nextState) => {
         setApps(nextState.apps);
         setRecentApps(nextState.recent);
@@ -782,7 +782,15 @@ export function Editor() {
           <button type="button" className={panel === "secrets" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("secrets")}>Secrets</button>
           <button type="button" className={panel === "beautify" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => setPanel((current) => current === "beautify" ? "" : "beautify")}>Beautify</button>
           <button type="button" className={panel === "print" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => setPanel((current) => current === "print" ? "" : "print")}>Print</button>
-          <button type="button" className={panel === "open" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => openPanel("open")}>Open in</button>
+          <button type="button" className={panel === "open" ? "ed-text-btn on" : "ed-text-btn"} onClick={() => {
+            if (!isMac()) {
+              const id = state?.captureId;
+              if (!id) return;
+              api.openInSystem(id).catch((err: Error) => setError(err.message));
+              return;
+            }
+            openPanel("open");
+          }}>Open in</button>
           <div className="ed-save-wrap" ref={saveWrap}>
             <div className="ed-save">
               <button type="button" onClick={() => savePng()}>Save PNG</button>

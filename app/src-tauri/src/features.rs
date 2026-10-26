@@ -257,10 +257,52 @@ pub(crate) fn begin_open_in(
     state: &State<AppState>,
     id: &str,
 ) -> Result<(), String> {
-    *state.open_in_id.lock().map_err(err_string)? = Some(id.to_string());
-    crate::windows::open_view(
-        app, "open-in", "open-in", "Open in", 280.0, 120.0, 420.0, 520.0, true, false,
-    )
+    #[cfg(windows)]
+    {
+        let _ = app;
+        let image = commands::visible_image(state, id)?;
+        let path = write_temp(&image)?;
+        return show_open_with(path);
+    }
+    #[cfg(not(windows))]
+    {
+        *state.open_in_id.lock().map_err(err_string)? = Some(id.to_string());
+        crate::windows::open_view(
+            app, "open-in", "open-in", "Open in", 280.0, 120.0, 420.0, 520.0, true, false,
+        )
+    }
+}
+
+/// The system Open with dialog. It runs off the webview thread so the dialog's
+/// own message loop does not stall the window that asked for it.
+#[cfg(windows)]
+fn show_open_with(path: PathBuf) -> Result<(), String> {
+    std::thread::spawn(move || unsafe {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+        use windows_sys::Win32::UI::Shell::{
+            SHOpenWithDialog, OAIF_EXEC, OAIF_HIDE_REGISTRATION, OPENASINFO,
+        };
+        let _ = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+        let mut wide: Vec<u16> = OsStrExt::encode_wide(path.as_os_str()).collect();
+        wide.push(0);
+        let info = OPENASINFO {
+            pcszFile: wide.as_ptr(),
+            pcszClass: std::ptr::null(),
+            oaifInFlags: OAIF_EXEC | OAIF_HIDE_REGISTRATION,
+        };
+        let _ = SHOpenWithDialog(std::ptr::null_mut(), &info);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_in_system(
+    app: AppHandle,
+    state: State<AppState>,
+    capture_id: String,
+) -> Result<(), String> {
+    begin_open_in(&app, &state, &capture_id)
 }
 
 #[tauri::command]

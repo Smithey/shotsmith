@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::{MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -174,6 +174,7 @@ pub fn run() {
             features::apps_list,
             features::open_in_state,
             features::open_in_choose,
+            features::open_in_system,
             features::measure_at,
             features::lookup_text,
             features::plugins_list,
@@ -371,7 +372,8 @@ pub fn rebuild_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     {
         let _ = app.remove_menu();
         if let Some(tray) = app.tray_by_id("shotsmith") {
-            let _ = tray.set_menu(Some(build_tray_menu(app)?));
+            let _ = tray.set_menu::<Menu<tauri::Wry>>(None);
+            let _ = tray.set_show_menu_on_left_click(false);
             return Ok(());
         }
     }
@@ -388,39 +390,30 @@ pub fn rebuild_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     {
         builder = builder.icon_as_template(true);
     }
+    let handle = app.clone();
     builder = builder
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             let _ = on_menu(app, event.id.as_ref());
-        });
-    #[cfg(target_os = "macos")]
-    {
-        let handle = app.clone();
-        builder = builder.on_tray_icon_event(move |_tray, event| {
+        })
+        .on_tray_icon_event(move |_tray, event| {
             if let TrayIconEvent::Click {
-                button_state, rect, ..
+                button,
+                button_state,
+                rect,
+                ..
             } = event
             {
-                if button_state == MouseButtonState::Down {
+                // Up would toggle the panel closed again. Windows sends both.
+                if button_state == MouseButtonState::Down
+                    && matches!(button, MouseButton::Left | MouseButton::Right)
+                {
                     windows::toggle_status_menu(&handle, rect);
                 }
             }
         });
-    }
-    #[cfg(not(target_os = "macos"))]
-    let tray_menu = build_tray_menu(app)?;
-    #[cfg(not(target_os = "macos"))]
-    {
-        builder = builder.menu(&tray_menu).show_menu_on_left_click(true);
-    }
     builder.build(app)?;
     Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let menu = Menu::new(app)?;
-    append_capture(&menu, app, true)?;
-    Ok(menu)
 }
 
 fn chord(tail: &str) -> String {
@@ -704,9 +697,22 @@ fn same_shortcut(shortcut: &Shortcut, raw: &str) -> bool {
 }
 
 fn accelerator(raw: &str) -> String {
-    if parse_shortcut(raw).is_some() {
-        raw.to_string()
-    } else {
-        String::new()
+    let Some(shortcut) = parse_shortcut(raw) else {
+        return String::new();
+    };
+    // A Win key cannot be a Windows menu accelerator. Leaving it on the Full
+    // screen item makes the whole tray menu fail, so the icon is never added.
+    #[cfg(windows)]
+    if shortcut
+        .mods
+        .contains(tauri_plugin_global_shortcut::Modifiers::SUPER)
+        || shortcut
+            .mods
+            .contains(tauri_plugin_global_shortcut::Modifiers::META)
+    {
+        return String::new();
     }
+    #[cfg(not(windows))]
+    let _ = shortcut;
+    raw.to_string()
 }

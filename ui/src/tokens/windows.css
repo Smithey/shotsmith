@@ -20,3 +20,46 @@ html[data-platform="windows"] .hist-bar {
 html[data-platform="windows"] .set-nav {
   padding-top: 14px;
 }
+
+/* The frosted panel does not blur the desktop here, so the see-through
+   fill just muddies the menu. A solid panel stays readable. */
+html[data-platform="windows"] .status-menu,
+html[data-platform="windows"] .menu-pop {
+  --menu-bg: #f3f3f5;
+  --menu-fly: #ffffff;
+  backdrop-filter: none;
+}
+
+html[data-platform="windows"] .settings,
+html[data-platform="windows"] .editor,
+html[data-platform="windows"] .history,
+html[data-platform="windows"] .onboarding {
+  color-scheme: light;
+}
+
+html[data-platform="windows"] input,
+html[data-platform="windows"] select,
+html[data-platform="windows"] textarea {
+  outline: none;
+}
+
+html[data-platform="windows"] input:focus,
+html[data-platform="windows"] select:focus,
+html[data-platform="windows"] textarea:focus {
+  outline: none;
+  border-color: #0a84ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-platform="windows"] .status-menu,
+  html[data-platform="windows"] .menu-pop {
+    --menu-bg: #2c2c2e;
+    --menu-fly: #3a3a3c;
+  }
+  html[data-platform="windows"] .settings,
+  html[data-platform="windows"] .editor,
+  html[data-platform="windows"] .history,
+  html[data-platform="windows"] .onboarding {
+    color-scheme: dark;
+  }
+}

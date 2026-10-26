@@ -16,6 +16,14 @@ export function Donut() {
   stateRef.current = state;
 
   useEffect(() => {
+    if (!state) return;
+    // The effect runs after the new wheel is committed. A hidden window does
+    // not run animation frames, so waiting for one left the next capture blank.
+    const win = currentWindow();
+    void win.show().then(() => win.setFocus());
+  }, [state]);
+
+  useEffect(() => {
     const load = () => {
       busy.current = false;
       api.donut().then(setState).catch((err: Error) => setError(err.message));

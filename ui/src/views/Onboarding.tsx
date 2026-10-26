@@ -30,6 +30,7 @@ export function Onboarding() {
   const [screen, setScreen] = useState<boolean | null>(MAC ? null : true);
   const [access, setAccess] = useState<boolean | null>(MAC ? null : true);
   const [after, setAfter] = useState("donut");
+  const [boot, setBoot] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [shortcuts, setShortcuts] = useState<Settings["shortcuts"] | null>(null);
@@ -37,7 +38,10 @@ export function Onboarding() {
   const steps = MAC ? [0, 1, 2] : [1, 2];
 
   useEffect(() => {
-    api.settings().then((next) => setShortcuts(next.shortcuts)).catch(() => undefined);
+    api.settings().then((next) => {
+      setShortcuts(next.shortcuts);
+      setBoot(next.launchAtLogin);
+    }).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -159,8 +163,16 @@ export function Onboarding() {
               </button>
             ))}
           </div>
+          <h2>Start on boot</h2>
+          <div className="choices">
+            <button type="button" className={boot ? "choice on" : "choice"} onClick={() => setBoot((on) => !on)}>
+              <strong>{boot ? "On" : "Off"}</strong>
+              <span>Open Shotsmith when you sign in. Change this later in Settings.</span>
+            </button>
+          </div>
         </>
       )}
+      {error && step !== 0 && <p className="error">{error}</p>}
       <div className="row" style={{ marginTop: 18 }}>
         {step > (MAC ? 0 : 1) && <button className="secondary" onClick={() => { hold.current = true; setStep(step - 1); }}>Back</button>}
         {step < 2 && (
@@ -168,7 +180,12 @@ export function Onboarding() {
             Continue
           </button>
         )}
-        {step === 2 && <button className="primary" onClick={() => api.finishOnboarding(after)}>Start capturing</button>}
+        {step === 2 && (
+          <button className="primary" onClick={() => {
+            setError("");
+            api.finishOnboarding(after, boot).catch((err: Error) => setError(err.message));
+          }}>Start capturing</button>
+        )}
       </div>
     </div>
   );

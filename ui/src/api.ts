@@ -235,7 +235,8 @@ export const api = {
   reveal: (id: string) => invoke<void>("reveal_capture", { id }),
   openHistory: () => invoke<void>("open_history"),
   openSettings: () => invoke<void>("open_settings"),
-  finishOnboarding: (afterCapture: string) => invoke<void>("finish_onboarding", { afterCapture }),
+  finishOnboarding: (afterCapture: string, launchAtLogin: boolean) =>
+    invoke<void>("finish_onboarding", { afterCapture, launchAtLogin }),
   openImage: () => invoke<void>("open_image"),
   editClipboard: () => invoke<void>("edit_clipboard"),
   pickFolder: () => invoke<string | null>("pick_folder"),
@@ -253,6 +254,7 @@ export const api = {
   apps: () => invoke<AppChoice[]>("apps_list"),
   openInState: () => invoke<{ captureId: string; recent: AppChoice[]; apps: AppChoice[] }>("open_in_state"),
   openInChoose: (appId: string, captureId: string | null) => invoke<void>("open_in_choose", { appId, captureId }),
+  openInSystem: (captureId: string) => invoke<void>("open_in_system", { captureId }),
   measureAt: (x: number, y: number) => invoke<{ x: number; y: number; w: number; h: number }>("measure_at", { x, y }),
   lookup: (text: string) => invoke<void>("lookup_text", { text }),
   plugins: () => invoke<PluginInfo[]>("plugins_list"),

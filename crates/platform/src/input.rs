@@ -145,17 +145,13 @@ fn element_bounds_now(x: f32, y: f32) -> PlatformResult<(f32, f32, f32, f32)> {
 }
 
 pub fn installed_apps() -> Vec<AppChoice> {
-    let mut apps = Vec::new();
+    let mut apps: Vec<AppChoice> = Vec::new();
     #[cfg(target_os = "macos")]
     {
         collect_apps(Path::new("/Applications"), &mut apps);
         if let Some(home) = dirs_home() {
             collect_apps(&home.join("Applications"), &mut apps);
         }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        collect_app_paths(&mut apps);
     }
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     apps.dedup_by(|a, b| a.id == b.id);
@@ -341,35 +337,6 @@ fn collect_apps_here(dir: &Path, apps: &mut Vec<AppChoice>) {
         apps.push(AppChoice {
             id: path.to_string_lossy().to_string(),
             name: name.to_string(),
-        });
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn collect_app_paths(apps: &mut Vec<AppChoice>) {
-    let output = Command::new("reg")
-        .args([
-            "query",
-            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
-        ])
-        .output();
-    let Ok(output) = output else {
-        return;
-    };
-    let Ok(text) = String::from_utf8(output.stdout) else {
-        return;
-    };
-    for line in text.lines() {
-        let line = line.trim();
-        let Some(name) = line.rsplit('\\').next() else {
-            continue;
-        };
-        if !name.to_ascii_lowercase().ends_with(".exe") {
-            continue;
-        }
-        apps.push(AppChoice {
-            id: name.to_string(),
-            name: name.trim_end_matches(".exe").to_string(),
         });
     }
 }

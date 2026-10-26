@@ -16,6 +16,7 @@ export function Overlay() {
   const [rect, setRect] = useState<Rect | null>(null);
   const [draft, setDraft] = useState<Rect | null>(null);
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
+  const [tracking, setTracking] = useState(false);
   const [loupeOn, setLoupeOn] = useState(true);
   const [includeCursor, setIncludeCursor] = useState(false);
   const [error, setError] = useState("");
@@ -73,6 +74,7 @@ export function Overlay() {
     confirming.current = false;
     setRect(null);
     setDraft(null);
+    setTracking(false);
     setError("");
   }
 
@@ -165,6 +167,7 @@ export function Overlay() {
 
   function onMove(event: React.PointerEvent) {
     const p = point(event);
+    setTracking(true);
     setCursor(p);
     setHex(hexAt(p));
     drawLoupe(p);
@@ -285,7 +288,7 @@ export function Overlay() {
           </div>
         </div>
       )}
-      {loupeOn && mode !== "window" && (
+      {loupeOn && tracking && mode !== "window" && (
         <div className="loupe" style={{ left: loupeLeft, top: loupeTop }}>
           <canvas ref={loupeRef} />
           <p>x {Math.round(cursor.x)} y {Math.round(cursor.y)}<br />{hex || "-"} · {isMac() ? "⌘C" : "Ctrl+C"} copies</p>

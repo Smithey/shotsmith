@@ -58,7 +58,9 @@ pub fn open_view(
         let _ = window.set_size(LogicalSize::new(width, height));
         // The capture window is shown only after it is marked as unable to
         // enter a fullscreen Space. Showing it here does that first.
-        if !capture {
+        // A new wheel window is what makes the second and third capture wait.
+        // Keep the one window and let the page show it after the new capture loads.
+        if !capture && !is_donut(label) {
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
@@ -100,16 +102,13 @@ pub fn open_view(
         .resizable(decorations)
         .shadow(!transparent && !capture)
         .visible(!chrome && !capture && !is_donut(label))
-        .focused(label != "hud")
+        .focused(label != "hud" && !is_donut(label))
         .accept_first_mouse(capture || is_donut(label) || label == "hud")
         .content_protected(capture);
-    if is_donut(label) {
-        builder = builder.on_page_load(|window, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        });
+    if chrome {
+        // Theme has to be chosen before the webview exists. Setting it later
+        // changes the frame, sticks the loading spinner, and the next click hangs.
+        builder = builder.theme(window_theme(app));
     }
     let window = builder.build().map_err(|err| err.to_string())?;
     if transparent || is_donut(label) || label == "hud" {
@@ -118,12 +117,19 @@ pub fn open_view(
     if chrome {
         watch_window(app, &window);
         list_in_dock(&window);
-        apply_appearance(app);
         let _ = window.show();
         let _ = window.set_focus();
         sync_dock(app);
     }
     Ok(())
+}
+
+fn window_theme(app: &AppHandle) -> Option<tauri::Theme> {
+    match stored_appearance(app).as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    }
 }
 
 fn stored_appearance(app: &AppHandle) -> String {
@@ -331,7 +337,6 @@ pub fn dismiss_donut(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
         if is_donut(&label) {
             let _ = window.hide();
-            let _ = window.destroy();
         }
     }
 }
@@ -350,11 +355,16 @@ pub fn hide_labeled(app: &AppHandle, prefix: &str) {
     for (label, window) in app.webview_windows() {
         if label.starts_with(prefix) || label == prefix {
             if label.starts_with("overlay") {
-                // Hiding leaves the screen-sized window in front. Close it.
+                // Closing the webview from its own click deadlocks for about
+                // 15 seconds once another window (the wheel) exists. Hide it
+                // and reuse it on the next capture.
                 release_overlay(&window);
                 hid_overlay = true;
                 let _ = window.hide();
-                let _ = window.destroy();
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = window.destroy();
+                }
                 continue;
             }
             let _ = window.hide();
@@ -407,6 +417,7 @@ fn show_overlay(app: &AppHandle, display: &DisplayPayload) -> Result<(), String>
     let x = display.x as f64;
     let y = display.y as f64;
     let label = format!("overlay-{}", display.id);
+    let existing = app.get_webview_window(&label).is_some();
     open_view(
         app,
         &label,
@@ -421,8 +432,13 @@ fn show_overlay(app: &AppHandle, display: &DisplayPayload) -> Result<(), String>
     )?;
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.set_content_protected(true);
-        seat_overlay(&window, x, y, width, height);
+        let _ = window.set_ignore_cursor_events(false);
+        // The extended-style change after the webview exists sticks the next click.
+        if !existing {
+            seat_overlay(&window, x, y, width, height);
+        }
         let _ = window.show();
+        let _ = window.set_focus();
     }
     Ok(())
 }
@@ -471,10 +487,10 @@ fn seat_overlay(window: &tauri::WebviewWindow, x: f64, y: f64, width: f64, heigh
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = (x, y, width, height);
-        let _ = window.set_always_on_top(true);
-        let _ = window.set_skip_taskbar(true);
-        seat_tool_window(window);
+        let _ = (window, x, y, width, height);
+        // Topmost and skip-taskbar are set before the webview exists.
+        // Changing the frame afterwards detaches the view, which leaves
+        // the loupe as its own window at the top-left of the main screen.
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -509,7 +525,13 @@ fn release_overlay(window: &tauri::WebviewWindow) {
             ns.orderOut(None);
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // A style change while the shield is on screen paints a rectangle
+        // and the hide then removes it. Hide and leave the frame alone.
+        let _ = window.hide();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = window.set_ignore_cursor_events(true);
         let _ = window.hide();
@@ -672,37 +694,26 @@ fn focus_wheel(window: &tauri::WebviewWindow) {
     let _ = window.set_focus();
 }
 
+/// Drop the system corner and border so the panel's own radius and shadow
+/// are the only chrome. This does not touch the extended style: that change
+/// after the webview exists sticks the view on its loading spinner.
 #[cfg(target_os = "windows")]
-fn seat_tool_window(window: &tauri::WebviewWindow) {
+fn flatten_menu_window(window: &tauri::WebviewWindow) {
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
     let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
     unsafe {
         use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
-            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW,
-            WS_EX_TOOLWINDOW,
-        };
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let next = (ex | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
         let corner: i32 = 1;
         DwmSetWindowAttribute(hwnd, 33, &corner as *const i32 as *const _, 4);
         let border: u32 = 0xFFFF_FFFE;
         DwmSetWindowAttribute(hwnd, 34, &border as *const u32 as *const _, 4);
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+fn flatten_menu_window(_window: &tauri::WebviewWindow) {}
 
 fn clear_round_window(window: &tauri::WebviewWindow) {
     let _ = window.set_shadow(false);
@@ -747,6 +758,7 @@ pub fn open_history(app: &AppHandle) -> Result<(), String> {
         .decorations(true)
         .resizable(true)
         .background_color(Color(255, 255, 255, 255))
+        .theme(window_theme(app))
         .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
@@ -757,7 +769,6 @@ pub fn open_history(app: &AppHandle) -> Result<(), String> {
     watch_window(app, &window);
     list_in_dock(&window);
     seat_traffic_lights(&window);
-    apply_appearance(app);
     let _ = window.show();
     let _ = window.set_focus();
     sync_dock(app);
@@ -782,6 +793,7 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
         .decorations(true)
         .resizable(true)
         .background_color(Color(255, 255, 255, 255))
+        .theme(window_theme(app))
         .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
@@ -792,7 +804,6 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     watch_window(app, &window);
     list_in_dock(&window);
     seat_traffic_lights(&window);
-    apply_appearance(app);
     let _ = window.show();
     let _ = window.set_focus();
     sync_dock(app);
@@ -844,6 +855,7 @@ pub fn open_editor(app: &AppHandle, id: &str, title: &str) -> Result<(), String>
         .decorations(true)
         .resizable(true)
         .background_color(Color(255, 255, 255, 255))
+        .theme(window_theme(app))
         .visible(false)
         .focused(true);
     #[cfg(target_os = "macos")]
@@ -854,7 +866,6 @@ pub fn open_editor(app: &AppHandle, id: &str, title: &str) -> Result<(), String>
     watch_window(app, &window);
     list_in_dock(&window);
     seat_traffic_lights(&window);
-    apply_appearance(app);
     let _ = window.show();
     let _ = window.set_focus();
     sync_dock(app);
@@ -865,6 +876,7 @@ pub fn toggle_status_menu(app: &AppHandle, rect: Rect) {
     if let Some(window) = app.get_webview_window("status-menu") {
         if window.is_visible().unwrap_or(false) {
             MENU_HIDDEN_AT.store(now_ms(), Ordering::Relaxed);
+            MENU_SHOWN_AT.store(0, Ordering::Relaxed);
             let _ = window.hide();
             return;
         }
@@ -872,27 +884,81 @@ pub fn toggle_status_menu(app: &AppHandle, rect: Rect) {
     if now_ms().saturating_sub(MENU_HIDDEN_AT.load(Ordering::Relaxed)) < 280 {
         return;
     }
-    // The status item click is not an activating click. Showing the panel
-    // inside that mouseDown leaves it visible but not key: hover never
-    // tracks and the translucent background stays washed out. Open it on
-    // the next turn, after the click has finished.
+    // The click is still inside the tray message. Opening the panel on the
+    // next turn lets it take key focus, so hover and the blur-to-close work.
     let app = app.clone();
-    let queued = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if place_status_menu(&queued, rect).is_err() {
-            return;
-        }
-        MENU_SHOWN_AT.store(now_ms(), Ordering::Relaxed);
-        MENU_FOCUS_RETRY.store(true, Ordering::Relaxed);
-        if let Some(window) = queued.get_webview_window("status-menu") {
-            let _ = window.show();
-            let _ = window.set_focus();
+    std::thread::spawn(move || {
+        let queued = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let created = match place_status_menu(&queued, rect) {
+                Ok(created) => created,
+                Err(_) => return,
+            };
+            // A new panel shows itself once the page has loaded. Showing it
+            // here leaves the WebView2 spinner up.
+            if !created {
+                reveal_status_menu(&queued);
+            }
+        });
+    });
+}
+
+/// The panel often never receives a blur on Windows, so a click on another
+/// window leaves it up. After it has been the foreground window, hide it once
+/// the foreground moves elsewhere.
+#[cfg(target_os = "windows")]
+fn arm_menu_dismiss(app: AppHandle, hwnd: isize) {
+    use std::sync::atomic::AtomicBool;
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    if ARMED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut seen = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let foreground = unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow};
+                let foreground = GetForegroundWindow();
+                let root = GetAncestor(foreground, 2);
+                foreground as isize == hwnd || root as isize == hwnd
+            };
+            if foreground {
+                seen = true;
+                continue;
+            }
+            if !seen || now_ms().saturating_sub(MENU_SHOWN_AT.load(Ordering::Relaxed)) < 250 {
+                continue;
+            }
+            seen = false;
+            let queued = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let Some(menu) = queued.get_webview_window("status-menu") else {
+                    return;
+                };
+                if !menu.is_visible().unwrap_or(false) {
+                    return;
+                }
+                MENU_HIDDEN_AT.store(now_ms(), Ordering::Relaxed);
+                MENU_SHOWN_AT.store(0, Ordering::Relaxed);
+                let _ = menu.hide();
+            });
         }
     });
 }
 
-fn place_status_menu(app: &AppHandle, rect: Rect) -> Result<(), String> {
+fn reveal_status_menu(app: &AppHandle) {
+    MENU_SHOWN_AT.store(now_ms(), Ordering::Relaxed);
+    MENU_FOCUS_RETRY.store(true, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window("status-menu") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn place_status_menu(app: &AppHandle, rect: Rect) -> Result<bool, String> {
     const WIN_W: f64 = 396.0;
+    // The status menu anchors a bottom taskbar to this same height.
     const WIN_H: f64 = 560.0;
     const PAD: f64 = 28.0;
     let monitors = app.available_monitors().unwrap_or_default();
@@ -913,22 +979,72 @@ fn place_status_menu(app: &AppHandle, rect: Rect) -> Result<(), String> {
     let origin = rect.position.to_logical::<f64>(scale);
     let icon = rect.size.to_logical::<f64>(scale);
     let mut x = origin.x + icon.width / 2.0 - WIN_W / 2.0;
-    let mut y = origin.y + icon.height + 5.0 - PAD;
+    let below = origin.y + icon.height + 5.0 - PAD;
+    let mut y = below;
+    let mut drop_up = false;
+    let mut top = 0.0;
+    let mut work_left = 0.0;
+    let mut work_right = f64::MAX;
+    let mut work_bottom = f64::MAX;
     if let Some(monitor) = monitor {
-        let origin_x = monitor.position().x as f64 / scale;
-        let width = monitor.size().width as f64 / scale;
-        let left = origin_x + 8.0;
-        let top = monitor.position().y as f64 / scale;
-        let right = origin_x + width - WIN_W - 8.0;
+        // Full monitor bounds include the taskbar, so a bottom icon is inside
+        // them. The panel has to stay in the work area or it slides under the
+        // taskbar and onto the next screen.
+        let work = monitor.work_area();
+        let work_top = work.position.y as f64 / scale;
+        work_left = work.position.x as f64 / scale;
+        work_right = work_left + work.size.width as f64 / scale;
+        let bottom = work_top + work.size.height as f64 / scale;
+        top = work_top;
+        work_bottom = bottom;
+        let left = work_left + 8.0;
+        let right = work_right - WIN_W - 8.0;
         x = x.clamp(left, right.max(left));
-        y = y.max(top);
+        if below + WIN_H > bottom - 8.0 {
+            // The icon is on the taskbar. Open upward, the way the Mac menu
+            // opens downward from the menu bar.
+            drop_up = true;
+            y = (origin.y - 5.0 + PAD - WIN_H).max(top);
+            if y + WIN_H > bottom {
+                y = (bottom - WIN_H).max(top);
+            }
+        } else {
+            y = below.max(top);
+        }
     }
     if let Some(window) = app.get_webview_window("status-menu") {
+        if drop_up {
+            let height = window
+                .inner_size()
+                .ok()
+                .map(|size| size.to_logical::<f64>(scale).height)
+                .filter(|height| *height > 1.0)
+                .unwrap_or(WIN_H);
+            y = (origin.y - 5.0 + PAD - height).max(top);
+            if y + height > work_bottom {
+                y = (work_bottom - height).max(top);
+            }
+        }
+        let width = window
+            .inner_size()
+            .ok()
+            .map(|size| size.to_logical::<f64>(scale).width)
+            .filter(|width| *width > 1.0)
+            .unwrap_or(WIN_W);
+        if x + width > work_right - 8.0 {
+            x = (work_right - 8.0 - width).max(work_left);
+        }
         let _ = window.set_position(LogicalPosition::new(x, y));
         let _ = app.emit("refresh", "status-menu");
-        return Ok(());
+        return Ok(false);
     }
-    let url = WebviewUrl::App("index.html?view=menu".into());
+    let url = WebviewUrl::App(
+        format!(
+            "index.html?view=menu{}",
+            if drop_up { "&drop=up" } else { "" }
+        )
+        .into(),
+    );
     let window = WebviewWindowBuilder::new(app, "status-menu", url)
         .title("Shotsmith")
         .inner_size(WIN_W, WIN_H)
@@ -945,27 +1061,46 @@ fn place_status_menu(app: &AppHandle, rect: Rect) -> Result<(), String> {
         .accept_first_mouse(true)
         .build()
         .map_err(|err| err.to_string())?;
+    // The page shows the window after it has measured itself. Showing it here
+    // paints the WebView2 spinner, and a frame change after the webview exists
+    // leaves that spinner stuck.
+    flatten_menu_window(&window);
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        arm_menu_dismiss(app.clone(), hwnd.0 as isize);
+    }
     let handle = app.clone();
     window.on_window_event(move |event| {
-        if let tauri::WindowEvent::Focused(false) = event {
-            let Some(menu) = handle.get_webview_window("status-menu") else {
-                return;
-            };
-            if !menu.is_visible().unwrap_or(false) {
-                return;
+        let tauri::WindowEvent::Focused(focused) = event else {
+            return;
+        };
+        let Some(menu) = handle.get_webview_window("status-menu") else {
+            return;
+        };
+        if *focused {
+            // The page calls show() once it has been placed. Start the
+            // grace period from that focus, not from when the window was built.
+            if MENU_SHOWN_AT.load(Ordering::Relaxed) == 0 {
+                MENU_SHOWN_AT.store(now_ms(), Ordering::Relaxed);
+                MENU_FOCUS_RETRY.store(true, Ordering::Relaxed);
             }
-            // The status-item click can resign key once, just after we show
-            // the panel. Take focus back instead of dismissing it.
-            let since = now_ms().saturating_sub(MENU_SHOWN_AT.load(Ordering::Relaxed));
-            if since < 250 && MENU_FOCUS_RETRY.swap(false, Ordering::Relaxed) {
-                let _ = menu.set_focus();
-                return;
-            }
-            MENU_HIDDEN_AT.store(now_ms(), Ordering::Relaxed);
-            let _ = menu.hide();
+            return;
         }
+        if !menu.is_visible().unwrap_or(false) {
+            return;
+        }
+        // The tray click can resign key once, just after the panel is shown.
+        // Take focus back instead of dismissing it.
+        let since = now_ms().saturating_sub(MENU_SHOWN_AT.load(Ordering::Relaxed));
+        if since < 250 && MENU_FOCUS_RETRY.swap(false, Ordering::Relaxed) {
+            let _ = menu.set_focus();
+            return;
+        }
+        MENU_HIDDEN_AT.store(now_ms(), Ordering::Relaxed);
+        MENU_SHOWN_AT.store(0, Ordering::Relaxed);
+        let _ = menu.hide();
     });
-    Ok(())
+    Ok(true)
 }
 
 static HUD_TOKEN: AtomicU64 = AtomicU64::new(0);
