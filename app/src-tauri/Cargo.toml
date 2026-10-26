@@ -34,7 +34,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 arboard = "3"
 base64 = "0.22"
-dirs = "5"
+dirs = "7"
 ureq = "2"
 thiserror = { workspace = true }
 tauri-plugin-single-instance = "2"
