@@ -20,7 +20,11 @@ Shotsmith 0.1 is a menu bar app for macOS 14 and newer. Press the shortcut, drag
 
 This repository is the whole free app, under the MIT licence. Nothing in it is a trial, and nothing here will be moved behind a paywall.
 
-Releases also include a Windows 11 64-bit installer. That build is not Authenticode signed yet, so Windows SmartScreen may warn until you confirm the checksum below.
+Releases also include a 64-bit installer for Windows 10 and Windows 11. The app draws its windows with Microsoft Edge WebView2. Windows 11 includes that. An up-to-date Windows 10 PC usually has it, and if it is missing the installer downloads it. That download needs an internet connection.
+
+Windows 7 and Windows 8 cannot install the current WebView2 runtime. The installer stops on those versions and says why. The app will not open there.
+
+The Windows build is not Authenticode signed yet, so Windows SmartScreen may warn until you confirm the checksum below.
 
 ## In this version
 
@@ -98,7 +102,7 @@ You need Rust (stable), Node.js 20 or newer, pnpm, and the [Tauri 2 prerequisite
 
 ## Releases
 
-A push to `main` builds an Apple silicon disk image and a Windows 11 64-bit installer, then attaches both to a GitHub Release. Check the checksum below before you install. Windows SmartScreen can warn on an unsigned installer.
+A push to `main` builds an Apple silicon disk image and a 64-bit Windows installer, then attaches both to a GitHub Release. Check the checksum below before you install. Windows SmartScreen can warn on an unsigned installer.
 
 `cargo build -p shotsmith-cli` builds the `shotsmith` command. `packaging/bin/shotsmith` runs it. Homebrew and winget manifests are in `packaging/`.
 
